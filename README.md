@@ -11,6 +11,11 @@ A Morphe patch for the MySpoti Android app. It changes the Android launcher/disp
 
 The patch uses resource-only changes and does not alter the package name, app logic, or sign-in/playback behavior.
 
+## Available patches
+
+<!-- PATCHES_START EXPANDED -->
+<!-- PATCHES_END -->
+
 ## Build
 
 Use Java 21 and the Gradle wrapper from this repository:
