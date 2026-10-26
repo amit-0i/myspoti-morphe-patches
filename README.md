@@ -1,3 +1,11 @@
+# Credits
+
+This project builds on the work of the following projects and their contributors:
+
+- **[Morphe](https://github.com/MorpheApp)** — For providing the patching framework and tools that make Android app customization possible.
+- **[Morphe Patches Template](https://github.com/MorpheApp/morphe-patches-template)** — For the original project structure and build configuration used as the starting point for this repository.
+- **[MySpoti](https://github.com/kota-zo/myspoti)** — Thanks to kota-zo and the MySpoti contributors for developing the original Android application that this branding patch targets.
+
 # MySpoti Spotify Branding Patch
 
 A Morphe patch for the MySpoti Android app. It changes the Android launcher/display name to **Spotify**, updates the `app_name` string used by the now-playing widget, and replaces the standard and monochrome launcher artwork with a Spotify-style green mark.
@@ -68,3 +76,11 @@ Use Java 21 and the Gradle wrapper from this repository:
 The patch bundle (`.mpp`) is written to `patches/build/libs/`.
 
 Then add the `.mpp` bundle as a local patch source in Morphe Desktop / Morphe Manager and apply **Spotify branding** to a MySpoti APK. Use a normal install, not a root-mounted install, for branding changes to take effect.
+
+### Trademarks and Disclaimer
+
+Spotify and its logo are trademarks of their respective owner and are used here solely to identify the branding customization provided by this patch.
+
+This is an independent, community-made project. It is not affiliated with, endorsed by, or officially associated with Morphe, the MySpoti developers, or Spotify.
+
+Thank you to all the developers and contributors whose work makes projects like this possible.
