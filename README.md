@@ -8,7 +8,15 @@ This project builds on the work of the following projects and their contributors
 
 # MySpoti Spotify Branding Patch
 
-A Morphe patch for the MySpoti Android app. It changes the Android launcher/display name to **Spotify**, updates the `app_name` string used by the now-playing widget, and replaces the standard and monochrome launcher artwork with a Spotify-style green mark.
+A Morphe resource patch for the MySpoti Android app. It changes the Android launcher/display name to **Spotify**, then applies one shared Spotify logomark geometry across the launcher icon family, Android themed/monochrome icon, in-app logo previews, splash screen, widget launcher art, and notification icon.
+
+
+## Branding coverage
+
+- **Launcher icons**
+- **Themed icons**
+- **In-app previews and splash**
+- **Widget and system notification**
 
 ## Supported package variants
 

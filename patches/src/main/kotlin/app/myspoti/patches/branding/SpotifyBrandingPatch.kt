@@ -40,20 +40,27 @@ private val myspotiStableDev = Compatibility(
     targets = listOf(AppTarget(version = null)),
 )
 
+private const val SPOTIFY_MARK_PATH = """M70.563,50.822C61.537,45.462 46.65,44.97 38.034,47.585C36.65,48.005 35.187,47.223 34.768,45.84C34.348,44.455 35.129,42.993 36.513,42.573C46.404,39.57 62.846,40.15 73.236,46.318C74.481,47.057 74.889,48.664 74.151,49.907C73.413,51.151 71.804,51.561 70.563,50.822ZM70.267,58.761C69.634,59.789 68.29,60.111 67.264,59.48C59.74,54.855 48.266,53.515 39.363,56.217C38.209,56.566 36.99,55.915 36.639,54.763C36.291,53.609 36.942,52.391 38.095,52.041C48.264,48.954 60.907,50.449 69.549,55.76C70.575,56.392 70.898,57.736 70.267,58.761ZM66.841,66.386C66.338,67.211 65.264,67.469 64.441,66.966C57.866,62.948 49.59,62.04 39.844,64.267C38.905,64.482 37.969,63.893 37.755,62.955C37.539,62.015 38.126,61.079 39.067,60.865C49.733,58.427 58.882,59.476 66.262,63.986C67.085,64.488 67.344,65.563 66.841,66.386ZM54,26C38.536,26 26,38.536 26,53.999C26,69.465 38.536,82 54,82C69.464,82 82,69.465 82,53.999C82,38.536 69.464,26 54,26L54,26Z"""
+
 private val spotifyForeground = """
     <?xml version="1.0" encoding="utf-8"?>
     <vector xmlns:android="http://schemas.android.com/apk/res/android"
         android:width="108dp"
         android:height="108dp"
-        android:viewportWidth="36"
-        android:viewportHeight="36">
-        <group android:translateX="6" android:translateY="6">
-            <!-- Spotify's classic circle-and-waves mark; the wave gaps reveal the dark icon background. -->
-            <path
-                android:fillColor="#1ED760"
-                android:pathData="M12 0C5.4 0 0 5.4 0 12s5.4 12 12 12 12-5.4 12-12S18.66 0 12 0zm5.521 17.34c-.24.359-.66.48-1.021.24-2.82-1.74-6.36-2.101-10.561-1.141-.418.122-.779-.179-.899-.539-.12-.421.18-.78.54-.9 4.56-1.021 8.52-.6 11.64 1.32.42.18.479.659.301 1.02zm1.44-3.3c-.301.42-.841.6-1.262.3-3.239-1.98-8.159-2.58-11.939-1.38-.479.12-1.02-.12-1.14-.6-.12-.48.12-1.021.6-1.141C9.6 9.9 15 10.561 18.72 12.84c.361.181.54.78.241 1.2zm.12-3.36C15.24 8.4 8.82 8.16 5.16 9.301a1.125 1.125 0 1 1-.653-2.153c4.394-1.335 11.698-1.077 16.31 1.661a1.125 1.125 0 0 1-1.156 1.935z" />
-        </group>
+        android:viewportWidth="108"
+        android:viewportHeight="108">
+        <path
+            android:fillColor="#1ED760"
+            android:pathData="$SPOTIFY_MARK_PATH" />
     </vector>
+""".trimIndent() + "\n"
+
+private val spotifyBackground = """
+    <?xml version="1.0" encoding="utf-8"?>
+    <shape xmlns:android="http://schemas.android.com/apk/res/android"
+        android:shape="rectangle">
+        <solid android:color="#000000" />
+    </shape>
 """.trimIndent() + "\n"
 
 private val spotifyMonochrome = """
@@ -61,33 +68,30 @@ private val spotifyMonochrome = """
     <vector xmlns:android="http://schemas.android.com/apk/res/android"
         android:width="108dp"
         android:height="108dp"
-        android:viewportWidth="36"
-        android:viewportHeight="36">
-        <group android:translateX="6" android:translateY="6">
-            <!-- Same logomark in a single color for Android themed icons. -->
-            <path
-                android:fillColor="#FFFFFFFF"
-                android:pathData="M12 0C5.4 0 0 5.4 0 12s5.4 12 12 12 12-5.4 12-12S18.66 0 12 0zm5.521 17.34c-.24.359-.66.48-1.021.24-2.82-1.74-6.36-2.101-10.561-1.141-.418.122-.779-.179-.899-.539-.12-.421.18-.78.54-.9 4.56-1.021 8.52-.6 11.64 1.32.42.18.479.659.301 1.02zm1.44-3.3c-.301.42-.841.6-1.262.3-3.239-1.98-8.159-2.58-11.939-1.38-.479.12-1.02-.12-1.14-.6-.12-.48.12-1.021.6-1.141C9.6 9.9 15 10.561 18.72 12.84c.361.181.54.78.241 1.2zm.12-3.36C15.24 8.4 8.82 8.16 5.16 9.301a1.125 1.125 0 1 1-.653-2.153c4.394-1.335 11.698-1.077 16.31 1.661a1.125 1.125 0 0 1-1.156 1.935z" />
-        </group>
+        android:viewportWidth="108"
+        android:viewportHeight="108">
+        <path
+            android:fillColor="#FFFFFFFF"
+            android:pathData="$SPOTIFY_MARK_PATH" />
     </vector>
 """.trimIndent() + "\n"
-
 
 private val spotifyNotification = """
     <?xml version="1.0" encoding="utf-8"?>
     <vector xmlns:android="http://schemas.android.com/apk/res/android"
         android:width="24dp"
         android:height="24dp"
-        android:viewportWidth="24"
-        android:viewportHeight="24">
-        <!-- Status-bar notifications use a monochrome Spotify wave mark. -->
-        <path
-            android:pathData="M4.2,7.3 C8.8,5.9 15.2,6.8 19.5,9.2 M5.2,11.1 C9.1,9.8 14.1,10.5 17.9,12.7 M6.2,14.8 C9.5,13.7 12.9,14.3 16.1,16.1"
-            android:strokeColor="#FFFFFFFF"
-            android:strokeWidth="1.9"
-            android:strokeLineCap="round"
-            android:strokeLineJoin="round"
-            android:fillColor="#00000000" />
+        android:viewportWidth="108"
+        android:viewportHeight="108">
+        <group
+            android:scaleX="1.4464286"
+            android:scaleY="1.4464286"
+            android:translateX="-24.107143"
+            android:translateY="-24.107143">
+            <path
+                android:fillColor="#FFFFFFFF"
+                android:pathData="$SPOTIFY_MARK_PATH" />
+        </group>
     </vector>
 """.trimIndent() + "\n"
 
@@ -105,9 +109,17 @@ val spotifyBrandingPatch = resourcePatch(
             val application = manifest.getElementsByTagName("application").item(0) as? Element
                 ?: error("MySpoti manifest has no application element")
             application.setAttributeNS(ANDROID_NAMESPACE, "android:label", "Spotify")
+
+            val receivers = manifest.getElementsByTagName("receiver")
+            val widgetReceiver = (0 until receivers.length)
+                .mapNotNull { receivers.item(it) as? Element }
+                .firstOrNull {
+                    it.getAttributeNS(ANDROID_NAMESPACE, "name") ==
+                        "com.music.spotui.widget.NowPlayingWidget"
+                }
+            widgetReceiver?.setAttributeNS(ANDROID_NAMESPACE, "android:label", "Spotify")
         }
 
-        // app_name is the fallback title for the now-playing widget. Update localized copies too.
         var foundAppName = false
         val appNameElementPattern = Regex("""<string\b(?=[^>]*\bname\s*=\s*["']app_name["'])[^>]*>""")
         listDecodableFiles("res/values*/strings.xml").forEach { path ->
@@ -138,12 +150,13 @@ val spotifyBrandingPatch = resourcePatch(
             "res/drawable/ic_launcher_foreground_orange.xml",
         ).forEach { path -> get(path).writeText(spotifyForeground) }
 
+        get("res/drawable/ic_launcher_background.xml").writeText(spotifyBackground)
+
         // Android themed icons, the About/supporter previews, splash screen, and widget
-        // consume the shared resources above or the monochrome layer below.
+        // consume the shared foreground/background resources or the monochrome layer below.
         get("res/drawable/ic_launcher_monochrome.xml").writeText(spotifyMonochrome)
 
-        // The small status-bar / media notification mark is a separate resource, so patch
-        // it independently rather than leaving the old MySpoti wave in notifications.
+        // The status-bar/media notification mark is separate from launcher artwork.
         get("res/drawable/msp_ic_notification.xml").writeText(spotifyNotification)
     }
 }
