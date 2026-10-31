@@ -43,42 +43,6 @@
               "description": null
             }
           ]
-        },
-        {
-          "packageName": "app.myspoti.dev",
-          "name": "MySpoti dev",
-          "description": null,
-          "apkFileType": "APK",
-          "appIconColor": "#1ED760",
-          "signatures": null,
-          "formFactor": "MOBILE",
-          "targets": [
-            {
-              "version": null,
-              "versionCodes": null,
-              "isExperimental": false,
-              "minSdk": null,
-              "description": null
-            }
-          ]
-        },
-        {
-          "packageName": "app.myspoti.stable.dev",
-          "name": "MySpoti stable dev",
-          "description": null,
-          "apkFileType": "APK",
-          "appIconColor": "#1ED760",
-          "signatures": null,
-          "formFactor": "MOBILE",
-          "targets": [
-            {
-              "version": null,
-              "versionCodes": null,
-              "isExperimental": false,
-              "minSdk": null,
-              "description": null
-            }
-          ]
         }
       ],
       "options": []

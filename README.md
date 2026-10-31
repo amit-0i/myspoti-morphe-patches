@@ -56,8 +56,6 @@ Supported package variants:
 
 - `app.myspoti`
 - `app.myspoti.stable`
-- `app.myspoti.dev`
-- `app.myspoti.stable.dev`
 
 ## MySpoti Export & Storage
 
