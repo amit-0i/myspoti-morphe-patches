@@ -5,39 +5,25 @@ Community-maintained patches for the MySpoti Android app, built with the [Morphe
 ## Available patches
 
 <!-- PATCHES_START EXPANDED -->
-> **[v1.0.1](https://github.com/amit-0i/myspoti-morphe-patches/releases/tag/v1.0.1)**&nbsp;&nbsp;•&nbsp;&nbsp;`main`&nbsp;&nbsp;•&nbsp;&nbsp;4 patches total
+> **[v1.1.0](https://github.com/amit-0i/myspoti-morphe-patches/releases/tag/v1.1.0)**&nbsp;&nbsp;•&nbsp;&nbsp;`main`&nbsp;&nbsp;•&nbsp;&nbsp;3 patches total
 <details open>
-<summary>📦 MySpoti&nbsp;&nbsp;•&nbsp;&nbsp;1 patch</summary>
+<summary>📦 MySpoti&nbsp;&nbsp;•&nbsp;&nbsp;2 patches</summary>
 <br>
+
+**🎯 Supported versions:**
+
+| 🧪&nbsp;2.2.0 |
+| :---: |
 
 | 💊&nbsp;Patch | 📜&nbsp;Description | ⚙️&nbsp;Options |
 |----------|----------------|-----------|
+| [MySpoti Export & Storage](#myspoti-export-storage) | Adds Export & storage to Settings > Downloads in Myspoti 2.2.0, with tagged audio exports, offline lyrics resolution/cache, portable LRC and JSON lyrics, embedded lyrics, playlist/album M3U8 manifests, reinstall restoration into native Downloads and lyrics caches, shared track files and offline storage migration. |  |
 | [Spotify branding](#spotify-branding) | Renames MySpoti to Spotify and replaces every launcher, themed, supporter-preview, splash, widget, and notification mark with Spotify branding. |  |
 
 </details>
 
 <details open>
 <summary>📦 MySpoti&nbsp;&nbsp;•&nbsp;&nbsp;1 patch</summary>
-<br>
-
-| 💊&nbsp;Patch | 📜&nbsp;Description | ⚙️&nbsp;Options |
-|----------|----------------|-----------|
-| [Spotify branding](#spotify-branding) | Renames MySpoti to Spotify and replaces every launcher, themed, supporter-preview, splash, widget, and notification mark with Spotify branding. |  |
-
-</details>
-
-<details open>
-<summary>📦 MySpoti dev&nbsp;&nbsp;•&nbsp;&nbsp;1 patch</summary>
-<br>
-
-| 💊&nbsp;Patch | 📜&nbsp;Description | ⚙️&nbsp;Options |
-|----------|----------------|-----------|
-| [Spotify branding](#spotify-branding) | Renames MySpoti to Spotify and replaces every launcher, themed, supporter-preview, splash, widget, and notification mark with Spotify branding. |  |
-
-</details>
-
-<details open>
-<summary>📦 MySpoti stable dev&nbsp;&nbsp;•&nbsp;&nbsp;1 patch</summary>
 <br>
 
 | 💊&nbsp;Patch | 📜&nbsp;Description | ⚙️&nbsp;Options |
