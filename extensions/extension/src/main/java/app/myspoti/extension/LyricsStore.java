@@ -13,6 +13,7 @@ import java.io.FileOutputStream;
 import java.lang.reflect.Constructor;
 import java.lang.reflect.Field;
 import java.lang.reflect.Method;
+import java.lang.reflect.Modifier;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.util.List;
@@ -22,51 +23,48 @@ import java.util.Map;
 /**
  * Bridge to MySpoti 2.2.0's own LyricsApi and its private offline cache.
  *
- * APK mappings verified from the supplied release DEX:
+ * APK mappings verified against the 2.2.0 source and release DEX:
  * LyricsApi = Lpg4; LyricsApi.Track = Lfg4; cache = Lpg4.b;
  * in-flight requests = Lpg4.c; prefetch(Track) = Lpg4.n(Lfg4;).
+ * The release build has R8-rewritten coroutine continuation types, so invoking the public
+ * prefetch entry point and waiting on its cache/in-flight state is safer than synthesizing
+ * a Continuation with the source-level Kotlin type name.
  *
  * The private JSON schema and SHA-1 filename match LyricsApi.LyricsDisk, while
  * portable JSON and LRC sidecars make lyrics survive uninstall and work in other players.
  */
 final class LyricsStore {
     private static final String TAG = "MyspotiStoragePatch";
-    private static final String API_CLASS = "Lpg4";
-    private static final String TRACK_CLASS = "Lfg4";
+    private static final String API_CLASS = "pg4";
+    private static final String TRACK_CLASS = "fg4";
     private static final String LYRICS_ENTITY = "com.music.spotui.data.entity.Lyrics";
-    private static final long PREFETCH_WAIT_MS = 8_000L;
+    private static final long FETCH_WAIT_MS = 30_000L;
     private static final long NATIVE_CACHE_MAX_AGE_MS = 14L * 24L * 60L * 60L * 1000L;
 
     private LyricsStore() {}
 
-    /** Obtain lyrics from the native cache or the same asynchronous resolver used by the player. */
+    /** Obtain lyrics by scheduling MySpoti's native fetch and waiting for its result. */
     static JSONObject obtain(Context context, String trackId, String title, String artist,
                              String album, long durationMs, String coverUrl) {
+        return obtain(context, trackId, title, artist, album, durationMs, coverUrl, false);
+    }
+
+    /** Manual sync may explicitly clear MySpoti's short-lived negative cache and retry a miss. */
+    static JSONObject obtain(Context context, String trackId, String title, String artist,
+                             String album, long durationMs, String coverUrl, boolean retryMiss) {
         if (trackId == null || trackId.trim().isEmpty()) return null;
         String key = trackId.trim();
         try {
             JSONObject disk = readNativeCache(context, key);
-            if (disk != null) {
-                disk.put("at", System.currentTimeMillis());
-                writeNativeCache(context, key, disk);
-                return disk;
-            }
+            if (disk != null) return disk;
 
             Class<?> api = Class.forName(API_CLASS);
             Class<?> trackType = Class.forName(TRACK_CLASS);
-            Constructor<?> constructor = trackType.getDeclaredConstructor(long.class, String.class,
-                    String.class, String.class, String.class, String.class);
-            constructor.setAccessible(true);
-            // Compact constructor order in this APK: duration, id, title, artist, album, cover URL.
-            Object track = constructor.newInstance(Math.max(0L, durationMs), key,
-                    safe(title), safe(artist), safe(album), safe(coverUrl));
-            Method keyMethod = trackType.getDeclaredMethod("a");
-            keyMethod.setAccessible(true);
-            String cacheKey = String.valueOf(keyMethod.invoke(track));
-
-            Map<?, ?> cache = staticMap(api, "b");
-            Map<?, ?> inFlight = staticMap(api, "c");
-            Object cached = cache == null ? null : cache.get(cacheKey);
+            Object track = createTrack(trackType, key, title, artist, album, durationMs, coverUrl);
+            Object apiInstance = singletonInstance(api);
+            Map<?, ?> cache = objectMap(api, "b", apiInstance);
+            Map<?, ?> inFlight = objectMap(api, "c", apiInstance);
+            Object cached = cache == null ? null : cache.get(key);
             if (cached != null && isLyrics(cached)) {
                 JSONObject encoded = encodeRuntimeLyrics(cached, key);
                 if (encoded != null) {
@@ -75,43 +73,97 @@ final class LyricsStore {
                 }
             }
 
-            // LyricsApi remembers a negative lookup for two minutes. Clear only this track's miss.
-            if (cache != null && cached != null && !isLyrics(cached)
-                    && (inFlight == null || !inFlight.containsKey(cacheKey))) {
-                try { cache.remove(cacheKey); } catch (Throwable ignored) {}
+            // The native resolver caches a negative result briefly. Keep that behavior during
+            // auto-sync, while an explicit Sync now may clear the negative entry and retry.
+            if (retryMiss && cache != null && cached != null && !isLyrics(cached)
+                    && (inFlight == null || !inFlight.containsKey(key))) {
+                try { cache.remove(key); } catch (Throwable ignored) {}
             }
 
-            boolean alreadyRunning = inFlight != null && inFlight.containsKey(cacheKey);
-            if (!alreadyRunning) {
-                Method prefetch = api.getDeclaredMethod("n", trackType);
-                prefetch.setAccessible(true);
-                prefetch.invoke(null, track);
-            }
-
-            long deadline = System.currentTimeMillis() + PREFETCH_WAIT_MS;
-            while (System.currentTimeMillis() < deadline) {
-                JSONObject onDisk = readNativeCache(context, key);
-                if (onDisk != null) {
-                    onDisk.put("at", System.currentTimeMillis());
-                    writeNativeCache(context, key, onDisk);
-                    return onDisk;
+            Object resolved = awaitNativePrefetch(context, api, apiInstance, trackType, track, key);
+            // LyricsDisk is the source of truth for the app's persistent, complete synced lyrics.
+            JSONObject persisted = readNativeCache(context, key);
+            if (persisted != null) return persisted;
+            if (isLyrics(resolved)) {
+                JSONObject encoded = encodeRuntimeLyrics(resolved, key);
+                if (encoded != null) {
+                    // Keep complete static/extension lyrics too, even when the app's native
+                    // disk cache intentionally only persists synced lyrics.
+                    writeNativeCache(context, key, encoded);
+                    return encoded;
                 }
-                Object resolved = cache == null ? null : cache.get(cacheKey);
-                if (resolved != null && isLyrics(resolved)) {
-                    JSONObject encoded = encodeRuntimeLyrics(resolved, key);
-                    if (encoded != null) {
-                        // MySpoti normally persists only synced lyrics; keep complete static lyrics too.
-                        writeNativeCache(context, key, encoded);
-                        return encoded;
-                    }
-                }
-                try { Thread.sleep(200L); }
-                catch (InterruptedException e) { Thread.currentThread().interrupt(); break; }
             }
-            Log.i(TAG, "Lyrics not available yet for " + safe(title) + "; a later sync can retry");
+            Object afterFetch = cache == null ? null : cache.get(key);
+            if (isLyrics(afterFetch)) {
+                JSONObject encoded = encodeRuntimeLyrics(afterFetch, key);
+                if (encoded != null) {
+                    writeNativeCache(context, key, encoded);
+                    return encoded;
+                }
+            }
+            Log.i(TAG, "Lyrics unavailable for " + safe(title) + " after waiting for MySpoti's native lyrics lookup");
         } catch (Throwable t) {
             Log.w(TAG, "Could not obtain lyrics for " + safe(title), t);
         }
+        return null;
+    }
+
+    /**
+     * Call the confirmed 2.2.0 prefetch(Track) method. It launches MySpoti's own suspend fetch
+     * job, shares any request already in flight, and fills the same memory/disk cache used by
+     * the player. Wait for that real job to populate the cache instead of assuming the prefetch
+     * call itself has completed the work.
+     */
+    private static Object awaitNativePrefetch(Context context, Class<?> api, Object apiInstance,
+                                               Class<?> trackType, Object track, String key) throws Exception {
+        Method prefetch;
+        try {
+            prefetch = api.getDeclaredMethod("n", trackType);
+        } catch (NoSuchMethodException renamed) {
+            prefetch = null;
+            for (Method candidate : api.getDeclaredMethods()) {
+                Class<?>[] parameters = candidate.getParameterTypes();
+                if (parameters.length == 1 && parameters[0] == trackType
+                        && candidate.getReturnType() == void.class) {
+                    prefetch = candidate;
+                    break;
+                }
+            }
+            if (prefetch == null) throw renamed;
+        }
+        prefetch.setAccessible(true);
+        prefetch.invoke(Modifier.isStatic(prefetch.getModifiers()) ? null : apiInstance, track);
+
+        Map<?, ?> cache = objectMap(api, "b", apiInstance);
+        Map<?, ?> inFlight = objectMap(api, "c", apiInstance);
+        long startedAt = System.currentTimeMillis();
+        long deadline = startedAt + FETCH_WAIT_MS;
+        boolean observedInFlight = inFlight != null && inFlight.containsKey(key);
+        while (System.currentTimeMillis() < deadline) {
+            JSONObject disk = readNativeCache(context, key);
+            if (disk != null) return disk;
+
+            Object cached = cache == null ? null : cache.get(key);
+            if (isLyrics(cached)) return cached;
+            boolean pending = inFlight != null && inFlight.containsKey(key);
+            if (pending) {
+                observedInFlight = true;
+            } else if (cached != null || observedInFlight) {
+                // A cached non-Lyrics value is MySpoti's completed negative result. If a job
+                // was observed and has now left inFlight, its cache/disk write is complete.
+                return null;
+            } else if (inFlight != null && System.currentTimeMillis() - startedAt > 2_000L) {
+                // The coroutine had time to start but never registered a request.
+                return null;
+            }
+
+            try { Thread.sleep(100L); }
+            catch (InterruptedException interrupted) {
+                Thread.currentThread().interrupt();
+                throw interrupted;
+            }
+        }
+        Log.w(TAG, "Timed out waiting for MySpoti's native lyrics prefetch");
         return null;
     }
 
@@ -119,11 +171,41 @@ final class LyricsStore {
         return value != null && LYRICS_ENTITY.equals(value.getClass().getName());
     }
 
-    private static Map<?, ?> staticMap(Class<?> owner, String name) {
+    private static Object createTrack(Class<?> trackType, String id, String title, String artist,
+                                      String album, long durationMs, String coverUrl) throws Exception {
+        try {
+            Constructor<?> constructor = trackType.getDeclaredConstructor(String.class, String.class,
+                    String.class, String.class, long.class, String.class);
+            constructor.setAccessible(true);
+            return constructor.newInstance(id, safe(title), safe(artist), safe(album),
+                    Math.max(0L, durationMs), safe(coverUrl));
+        } catch (NoSuchMethodException currentModelNotFound) {
+            Constructor<?> constructor = trackType.getDeclaredConstructor(long.class, String.class,
+                    String.class, String.class, String.class, String.class);
+            constructor.setAccessible(true);
+            return constructor.newInstance(Math.max(0L, durationMs), id, safe(title),
+                    safe(artist), safe(album), safe(coverUrl));
+        }
+    }
+
+    /** Find the Kotlin object receiver without relying on the name of its obfuscated INSTANCE field. */
+    private static Object singletonInstance(Class<?> owner) {
+        try {
+            for (Field field : owner.getDeclaredFields()) {
+                if (!Modifier.isStatic(field.getModifiers()) || field.getType() != owner) continue;
+                field.setAccessible(true);
+                Object instance = field.get(null);
+                if (instance != null) return instance;
+            }
+        } catch (Throwable ignored) {}
+        return null; // Also supports a future build where the API methods/fields are truly static.
+    }
+
+    private static Map<?, ?> objectMap(Class<?> owner, String name, Object instance) {
         try {
             Field field = owner.getDeclaredField(name);
             field.setAccessible(true);
-            Object value = field.get(null);
+            Object value = field.get(Modifier.isStatic(field.getModifiers()) ? null : instance);
             return value instanceof Map ? (Map<?, ?>) value : null;
         } catch (Throwable ignored) { return null; }
     }
@@ -235,7 +317,8 @@ final class LyricsStore {
     private static void invalidateMemoryCache(String key) {
         try {
             Class<?> api = Class.forName(API_CLASS);
-            Map<?, ?> inFlight = staticMap(api, "c");
+            Object apiInstance = singletonInstance(api);
+            Map<?, ?> inFlight = objectMap(api, "c", apiInstance);
             Object pending = inFlight == null ? null : inFlight.remove(key);
             if (pending != null) {
                 try {
@@ -255,7 +338,7 @@ final class LyricsStore {
                     }
                 } catch (Throwable ignored) {}
             }
-            Map<?, ?> cache = staticMap(api, "b");
+            Map<?, ?> cache = objectMap(api, "b", apiInstance);
             if (cache != null) cache.remove(key);
         } catch (Throwable t) {
             Log.w(TAG, "Could not invalidate the in-memory lyrics entry for " + key, t);

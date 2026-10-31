@@ -81,6 +81,8 @@ public final class DownloadPatch {
     });
     private static FileObserver autoSyncObserver;
     private static String autoSyncObservedPath;
+    private static FileObserver lyricsCacheObserver;
+    private static String lyricsCacheObservedPath;
     private static Runnable pendingAutoSync;
     private static boolean autoSyncRunning;
     private static boolean autoSyncAgain;
@@ -401,6 +403,9 @@ public final class DownloadPatch {
             Log.w(TAG, "Could not create the offline folder for the export sync observer");
             return;
         }
+        // Lyrics may be resolved after the audio and native download indexes have been
+        // written. Watch MySpoti's own durable lyrics cache as a second sync trigger.
+        startLyricsCacheObserver(app);
         final String path = root.getAbsolutePath();
         synchronized (AUTO_SYNC_OBSERVER_LOCK) {
             if (path.equals(autoSyncObservedPath) && autoSyncObserver != null) return;
@@ -420,6 +425,42 @@ public final class DownloadPatch {
             autoSyncObserver.startWatching();
             Log.i(TAG, "Watching native Downloads and collection indexes for export auto-sync");
         }
+    }
+
+    /**
+     * MySpoti writes complete synced lyrics to filesDir/lyrics_cache2 using an atomic rename.
+     * When that happens after the download index event, a second export pass can add the
+     * .lrc/JSON sidecars and embed lyrics into an already-exported audio file.
+     */
+    private static void startLyricsCacheObserver(Context context) {
+        Context app = context.getApplicationContext();
+        File directory = new File(app.getFilesDir(), "lyrics_cache2");
+        if (!directory.exists() && !directory.mkdirs()) {
+            Log.w(TAG, "Could not create MySpoti's lyrics cache directory for export observation");
+            return;
+        }
+        final String path = directory.getAbsolutePath();
+        boolean started = false;
+        synchronized (AUTO_SYNC_OBSERVER_LOCK) {
+            if (path.equals(lyricsCacheObservedPath) && lyricsCacheObserver != null) return;
+            if (lyricsCacheObserver != null) {
+                try { lyricsCacheObserver.stopWatching(); } catch (Throwable ignored) {}
+                lyricsCacheObserver = null;
+            }
+            lyricsCacheObservedPath = path;
+            lyricsCacheObserver = new FileObserver(path,
+                    FileObserver.CLOSE_WRITE | FileObserver.MOVED_TO | FileObserver.CREATE) {
+                @Override public void onEvent(int event, String name) {
+                    if (name != null && name.endsWith(".json")) scheduleAutoSync(app);
+                }
+            };
+            lyricsCacheObserver.startWatching();
+            started = true;
+            Log.i(TAG, "Watching MySpoti's native lyrics cache for export auto-sync");
+        }
+        // On the first launch after installing this update, run one pass when opted in so
+        // already-downloaded tracks can be backfilled without waiting for another file event.
+        if (started) scheduleAutoSync(app);
     }
 
     private static void scheduleAutoSync(Context context) {

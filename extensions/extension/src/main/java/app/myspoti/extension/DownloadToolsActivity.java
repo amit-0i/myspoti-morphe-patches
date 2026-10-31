@@ -894,10 +894,12 @@ public final class DownloadToolsActivity extends Activity {
                         JSONObject lyricsJson = index.readLyricsJson(trackId);
                         if (lyricsJson == null) {
                             lyricsJson = LyricsStore.obtain(this, trackId, title, artist, album,
-                                    DownloadPatch.trackDurationMs(track), DownloadPatch.trackCoverUrl(track));
+                                    DownloadPatch.trackDurationMs(track), DownloadPatch.trackCoverUrl(track), true);
                         }
                         boolean hasLyrics = LyricsStore.validLyricsJson(lyricsJson);
-                        if (hasLyrics) LyricsStore.restoreNativeCache(this, trackId, lyricsJson);
+                        if (hasLyrics && LyricsStore.readNativeCache(this, trackId) == null) {
+                            LyricsStore.restoreNativeCache(this, trackId, lyricsJson);
+                        }
                         String lyricsText = hasLyrics ? LyricsStore.toPlainText(lyricsJson) : "";
                         String lyricsLrc = hasLyrics ? LyricsStore.toLrc(lyricsJson, title, artist, album) : "";
 

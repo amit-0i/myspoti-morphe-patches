@@ -69,9 +69,11 @@ final class ExportSyncRunner {
             int lyricsSaved = 0;
             int lyricsFailed = 0;
             String lastError = null;
+            final long lyricsRetryIntervalMs = 12L * 60L * 60L * 1000L;
             for (Object track : tracks) {
                 Uri destination = null;
                 boolean created = false;
+                boolean lyricsLookupAttempted = false;
                 try {
                     File source = DownloadPatch.audioFile(app, track);
                     if (!source.isFile()) throw new java.io.FileNotFoundException("Downloaded audio is missing: " + source.getName());
@@ -88,15 +90,23 @@ final class ExportSyncRunner {
                     boolean sameFingerprint = destination != null && index.sameFingerprint(trackId, fingerprint);
 
                     JSONObject lyricsJson = index.readLyricsJson(trackId);
-                    // An automatic update should not wait through a fresh lyrics lookup for
-                    // every unchanged archived track. New/changed exports still use MySpoti's
-                    // resolver; a manual sync can retry missing lyrics later.
-                    if (lyricsJson == null && !sameFingerprint) {
+                    // First consume MySpoti's durable lyrics cache. A track can acquire lyrics
+                    // after its audio export, and that cache write triggers another auto-sync.
+                    if (lyricsJson == null) lyricsJson = LyricsStore.readNativeCache(app, trackId);
+                    // Retry missing lyrics even when audio was exported earlier. The first
+                    // pass can race a player-side lookup or provider response; skipping an
+                    // unchanged fingerprint here permanently left that export without lyrics.
+                    if (lyricsJson == null && index.shouldLookupLyrics(trackId, lyricsRetryIntervalMs)) {
+                        lyricsLookupAttempted = true;
                         lyricsJson = LyricsStore.obtain(app, trackId, title, artist, album,
                                 DownloadPatch.trackDurationMs(track), DownloadPatch.trackCoverUrl(track));
                     }
                     boolean hasLyrics = LyricsStore.validLyricsJson(lyricsJson);
-                    if (hasLyrics) LyricsStore.restoreNativeCache(app, trackId, lyricsJson);
+                    // Avoid rewriting an existing cache file: its FileObserver would otherwise
+                    // schedule an endless chain of identical background syncs.
+                    if (hasLyrics && LyricsStore.readNativeCache(app, trackId) == null) {
+                        LyricsStore.restoreNativeCache(app, trackId, lyricsJson);
+                    }
                     String lyricsText = hasLyrics ? LyricsStore.toPlainText(lyricsJson) : "";
                     String lyricsLrc = hasLyrics ? LyricsStore.toLrc(lyricsJson, title, artist, album) : "";
 
@@ -153,6 +163,10 @@ final class ExportSyncRunner {
                             lyricsFailed++;
                             Log.w(TAG, "Audio exported but lyric sidecars could not be saved for " + title, error);
                         }
+                    } else if (lyricsLookupAttempted) {
+                        // Keep an attempt timestamp after the track record is present, but let
+                        // a manual Sync now bypass this interval and explicitly retry the miss.
+                        index.markLyricsLookupAttempted(trackId);
                     }
                 } catch (Throwable error) {
                     failed++;

@@ -31,6 +31,9 @@ final class ExportIndex {
     static final String INDEX_NAME = "MySpoti Export Index.json";
     private static final String FORMAT = "myspoti-export-index";
     private static final int VERSION = 4;
+    // Incremented when the lyrics fetch bridge changes so previously failed attempts are retried
+    // once after an update instead of remaining suppressed by the old retry timestamp.
+    private static final int LYRICS_LOOKUP_VERSION = 2;
 
     private final Context context;
     private final ContentResolver resolver;
@@ -262,6 +265,31 @@ final class ExportIndex {
     boolean hasLyricsEmbedded(String trackId) {
         JSONObject item = entry(trackId);
         return item != null && item.optBoolean("lyricsEmbedded", false);
+    }
+
+    /** Avoid repeating failed background provider lookups for every unrelated collection update. */
+    boolean shouldLookupLyrics(String trackId, long retryIntervalMs) {
+        JSONObject item = entry(trackId);
+        if (item == null) return true;
+        // The first implementation's lookup could fail silently when no player cache existed.
+        // Re-run once with the corrected bridge, even if an older attempt was recorded.
+        if (item.optInt("lyricsLookupVersion", 0) < LYRICS_LOOKUP_VERSION) return true;
+        if (item.optBoolean("lyricsAvailable", false)) {
+            try {
+                if (readLyricsJson(trackId) != null) return false;
+            } catch (Throwable ignored) {}
+        }
+        long attemptedAt = item.optLong("lyricsLookupAttemptedAt", 0L);
+        return attemptedAt <= 0L || System.currentTimeMillis() - attemptedAt >= retryIntervalMs;
+    }
+
+    void markLyricsLookupAttempted(String trackId) throws Exception {
+        JSONObject item = entry(trackId);
+        if (item == null) throw new IOException("Cannot record a lyrics lookup before the audio export record exists for " + trackId);
+        item.put("lyricsLookupAttemptedAt", System.currentTimeMillis());
+        item.put("lyricsLookupVersion", LYRICS_LOOKUP_VERSION);
+        entries.put(trackId, item);
+        save();
     }
 
     JSONObject readLyricsJson(String trackId) throws IOException {
@@ -687,6 +715,8 @@ final class ExportIndex {
             if (previous.has("lyricsAvailable")) item.put("lyricsAvailable", previous.optBoolean("lyricsAvailable"));
             if (previous.has("lyricsSynced")) item.put("lyricsSynced", previous.optBoolean("lyricsSynced"));
             if (previous.has("lyricsEmbedded")) item.put("lyricsEmbedded", previous.optBoolean("lyricsEmbedded"));
+            if (previous.has("lyricsLookupAttemptedAt")) item.put("lyricsLookupAttemptedAt", previous.optLong("lyricsLookupAttemptedAt"));
+            if (previous.has("lyricsLookupVersion")) item.put("lyricsLookupVersion", previous.optInt("lyricsLookupVersion"));
         }
         item.put("exportedBytes", exportedBytes);
         item.put("exportedAt", System.currentTimeMillis());
