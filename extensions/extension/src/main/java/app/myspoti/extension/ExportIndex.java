@@ -418,6 +418,13 @@ final class ExportIndex {
         return uri;
     }
 
+    /** Remove a previously generated manifest filename suffix from a collection's display name. */
+    static String cleanCollectionName(String value) {
+        if (value == null) return "";
+        return value.replace('\n', ' ').replace('\r', ' ').trim()
+                .replaceFirst("(?i)\\s+\\[[0-9a-f]{8}\\]\\.m3u8$", "").trim();
+    }
+
     /** Write/update a portable .m3u8 collection manifest and record it in the same JSON index. */
     void writeCollectionManifest(String collectionKey, String collectionUri, String type,
                                  String name, String fileName, String content,
@@ -458,7 +465,7 @@ final class ExportIndex {
         JSONObject item = new JSONObject();
         item.put("collectionUri", collectionUri == null ? "" : collectionUri);
         item.put("type", type == null ? "" : type);
-        item.put("name", name == null ? "" : name);
+        item.put("name", cleanCollectionName(name));
         item.put("fileName", fileName);
         item.put("documentId", DocumentsContract.getDocumentId(document));
         // Keep full membership, including tracks still queued/not yet exported. A second array

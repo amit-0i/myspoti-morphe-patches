@@ -1025,7 +1025,7 @@ public final class DownloadToolsActivity extends Activity {
             if (collection == null || collection.uri == null || collection.uri.isEmpty()) continue;
             try {
                 boolean album = "album".equalsIgnoreCase(collection.type);
-                String collectionName = cleanText(collection.name);
+                String collectionName = ExportIndex.cleanCollectionName(cleanText(collection.name));
                 if (collectionName.isEmpty()) collectionName = album ? "Unknown album" : "Untitled playlist";
                 String token = stableToken(collection.uri);
                 List<String> folderPath = new ArrayList<>();
@@ -1054,7 +1054,11 @@ public final class DownloadToolsActivity extends Activity {
                     fileName = "Album.m3u8";
                 } else {
                     folderPath.add("Playlists");
-                    fileName = safeSegment(collectionName, "Untitled playlist") + " [" + token + "].m3u8";
+                    String playlistSegment = safeSegment(collectionName, "Untitled playlist");
+                    // Keep the manifest's visible/display name clean. The stable ID belongs in
+                    // its containing folder so same-named playlists never overwrite each other.
+                    folderPath.add(playlistSegment + " [" + token + "]");
+                    fileName = playlistSegment + ".m3u8";
                 }
                 folderDepth = folderPath.size();
                 String prefix = repeat("../", folderDepth);

@@ -655,7 +655,7 @@ public final class DownloadPatch {
             JSONObject restoredCollection = new JSONObject();
             restoredCollection.put("uri", uri);
             restoredCollection.put("type", collection.optString("type", ""));
-            restoredCollection.put("name", collection.optString("name", ""));
+            restoredCollection.put("name", ExportIndex.cleanCollectionName(collection.optString("name", "")));
             restoredCollection.put("tracks", memberCopy);
             restoredCollection.put("synced", collection.optLong("updatedAt", System.currentTimeMillis()));
             restoredCollection.put("quality", "");
