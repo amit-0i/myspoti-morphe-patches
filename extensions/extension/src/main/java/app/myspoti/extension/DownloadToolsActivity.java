@@ -64,6 +64,7 @@ public final class DownloadToolsActivity extends Activity {
     private TextView collectionSyncStatus;
     private TextView restoreStatus;
     private Switch autoSyncSwitch;
+    private Switch deleteSyncSwitch;
     private Dialog progressDialog;
     private ProgressBar progressBar;
     private TextView progressMessage;
@@ -268,7 +269,7 @@ public final class DownloadToolsActivity extends Activity {
         LinearLayout autoSyncText = column();
         autoSyncText.addView(label("Auto-sync songs, playlists & albums", 14, TEXT, Typeface.BOLD));
         addSpace(autoSyncText, 3);
-        autoSyncText.addView(label("Sync new songs and downloaded playlist/album changes when this screen opens.", 11, MUTED, Typeface.NORMAL));
+        autoSyncText.addView(label("Automatically sync each completed song download and playlist/album change.", 11, MUTED, Typeface.NORMAL));
         autoSyncRow.addView(autoSyncText, new LinearLayout.LayoutParams(0, -2, 1f));
         autoSyncSwitch = new Switch(this);
         autoSyncSwitch.setShowText(false);
@@ -279,20 +280,45 @@ public final class DownloadToolsActivity extends Activity {
                 new int[][] { new int[] { android.R.attr.state_checked }, new int[] {} },
                 new int[] { 0x8830D760, 0xFF555555 }));
         boolean autoSyncEnabled = getSharedPreferences(ExportIndex.PREFS, MODE_PRIVATE)
-                .getBoolean(ExportIndex.PREF_AUTO_SYNC, true);
+                .getBoolean(ExportIndex.PREF_AUTO_SYNC, false);
         autoSyncSwitch.setChecked(autoSyncEnabled);
         autoSyncSwitch.setOnCheckedChangeListener((button, checked) -> {
             getSharedPreferences(ExportIndex.PREFS, MODE_PRIVATE).edit()
                     .putBoolean(ExportIndex.PREF_AUTO_SYNC, checked).apply();
             if (exportSyncStatus != null) exportSyncStatus.setText(checked
-                    ? "Auto-sync is on. New songs and collection lists are checked whenever this screen opens."
+                    ? "Auto-sync is on. Completed downloads and playlist/album changes will be exported in the background."
                     : "Auto-sync is off. Use Sync now to update songs, playlists and albums.");
             if (checked) autoSyncSavedFolder();
         });
         autoSyncRow.addView(autoSyncSwitch);
         exportCard.addView(autoSyncRow);
+
+        addSpace(exportCard, 12);
+        LinearLayout deleteSyncRow = row(this);
+        deleteSyncRow.setGravity(Gravity.CENTER_VERTICAL);
+        LinearLayout deleteSyncText = column();
+        deleteSyncText.addView(label("Delete exported songs when removed from MySpoti", 14, TEXT, Typeface.BOLD));
+        addSpace(deleteSyncText, 3);
+        deleteSyncText.addView(label("Off by default. When enabled, the next sync deletes exported songs and lyrics that are no longer in MySpoti Downloads.", 11, MUTED, Typeface.NORMAL));
+        deleteSyncRow.addView(deleteSyncText, new LinearLayout.LayoutParams(0, -2, 1f));
+        deleteSyncSwitch = new Switch(this);
+        deleteSyncSwitch.setShowText(false);
+        deleteSyncSwitch.setThumbTintList(new ColorStateList(
+                new int[][] { new int[] { android.R.attr.state_checked }, new int[] {} },
+                new int[] { GREEN, 0xFFB3B3B3 }));
+        deleteSyncSwitch.setTrackTintList(new ColorStateList(
+                new int[][] { new int[] { android.R.attr.state_checked }, new int[] {} },
+                new int[] { 0x8830D760, 0xFF555555 }));
+        boolean deleteSyncEnabled = getSharedPreferences(ExportIndex.PREFS, MODE_PRIVATE)
+                .getBoolean(ExportIndex.PREF_DELETE_REMOVED, false);
+        deleteSyncSwitch.setChecked(deleteSyncEnabled);
+        deleteSyncSwitch.setOnCheckedChangeListener((button, checked) ->
+                getSharedPreferences(ExportIndex.PREFS, MODE_PRIVATE).edit()
+                        .putBoolean(ExportIndex.PREF_DELETE_REMOVED, checked).apply());
+        deleteSyncRow.addView(deleteSyncSwitch);
+        exportCard.addView(deleteSyncRow);
         addSpace(exportCard, 10);
-        exportSyncStatus = label("Choose an export folder once to enable automatic syncing.", 11, MUTED, Typeface.NORMAL);
+        exportSyncStatus = label("Auto-sync is off by default. Choose an export folder, then enable it to sync each completed download and playlist/album change.", 11, MUTED, Typeface.NORMAL);
         exportSyncStatus.setLineSpacing(dp(3), 1f);
         exportCard.addView(exportSyncStatus);
         addSpace(exportCard, 5);
@@ -554,7 +580,7 @@ public final class DownloadToolsActivity extends Activity {
 
     private void autoSyncSavedFolder() {
         boolean enabled = getSharedPreferences(ExportIndex.PREFS, MODE_PRIVATE)
-                .getBoolean(ExportIndex.PREF_AUTO_SYNC, true);
+                .getBoolean(ExportIndex.PREF_AUTO_SYNC, false);
         if (!enabled) {
             if (exportSyncStatus != null) exportSyncStatus.setText("Auto-sync is off. Use Sync now to update songs, playlists and albums.");
             loadSavedArchiveSummary();
@@ -798,11 +824,28 @@ public final class DownloadToolsActivity extends Activity {
         }
         final String collectionError = collectionReadError;
         collections = collectionSnapshot;
+        final java.util.Set<String> activeTrackIds = new java.util.LinkedHashSet<>();
+        for (Object track : tracks) {
+            String id = DownloadPatch.trackId(track);
+            if (id != null && !id.trim().isEmpty()) activeTrackIds.add(id);
+        }
+        final java.util.Set<String> activeCollectionKeys = collectionError == null
+                ? new java.util.LinkedHashSet<>() : null;
+        if (activeCollectionKeys != null) for (DownloadPatch.CollectionSnapshot collection : collections) {
+            if (collection != null && collection.uri != null && !collection.uri.isEmpty()) {
+                activeCollectionKeys.add(collection.type + "|" + collection.uri);
+            }
+        }
+        java.util.Set<String> singleSnapshot = null;
+        try { singleSnapshot = DownloadPatch.downloadedSingles(); }
+        catch (Throwable error) { Log.w("MyspotiStoragePatch", "Could not snapshot individual downloads", error); }
+        final java.util.Set<String> activeSingleIds = singleSnapshot;
 
         showProgress(automatic ? "Checking export folder" : "Syncing downloads",
                 tracks.isEmpty() ? "Reading your saved export list…" : "Comparing downloaded songs with the export index…",
                 true, Math.max(1, tracks.size()));
         worker.execute(() -> {
+            synchronized (DownloadPatch.exportSyncLock()) {
             int exported = 0;
             int skipped = 0;
             int failed = 0;
@@ -823,8 +866,9 @@ public final class DownloadToolsActivity extends Activity {
             ExportIndex index = null;
             try {
                 index = ExportIndex.open(this, tree);
-                try { index.mergeSingleTrackIds(DownloadPatch.downloadedSingles()); }
-                catch (Throwable singleError) { Log.w("MyspotiStoragePatch", "Could not snapshot individual download membership", singleError); }
+                try {
+                    if (activeSingleIds != null) index.mergeSingleTrackIds(activeSingleIds);
+                } catch (Throwable singleError) { Log.w("MyspotiStoragePatch", "Could not snapshot individual download membership", singleError); }
                 archiveCount = index.count();
                 savedCollectionCount = index.collectionCount();
                 archiveSummary = index.summary();
@@ -934,9 +978,23 @@ public final class DownloadToolsActivity extends Activity {
                                     + lyricsValue + " with lyrics · " + failedValue + " failed"));
                 }
 
-                // Build collection manifests only after the shared track files have been synced.
-                // Each playlist/album reuses the exact same Tracks/ document IDs; no audio copies
-                // are made for playlist membership.
+                boolean deleteRemoved = getSharedPreferences(ExportIndex.PREFS, MODE_PRIVATE)
+                        .getBoolean(ExportIndex.PREF_DELETE_REMOVED, false);
+                boolean deletionSyncSafe = deleteRemoved && DownloadPatch.canMirrorDeletedDownloads(
+                        this, activeTrackIds, activeCollectionKeys, activeSingleIds);
+                int deletedTracks = 0;
+                int deletedCollections = 0;
+                if (deletionSyncSafe) {
+                    // Prune stale audio before regenerating manifests, so no M3U8 points at a
+                    // file that this same sync is about to remove.
+                    deletedTracks = index.removeTracksNotIn(activeTrackIds);
+                    index.replaceSingleTrackIds(activeSingleIds);
+                } else if (deleteRemoved) {
+                    Log.w("MyspotiStoragePatch", "Skipped deletion sync because MySpoti's source indexes were not fully loaded");
+                }
+
+                // Build collection manifests only after the shared track files have been synced
+                // and stale exports pruned. Each list reuses the same Tracks/ document IDs.
                 runOnUiThread(() -> updateProgress(Math.max(1, tracks.size()), "Updating playlist & album lists…"));
                 if (collectionError == null) {
                     CollectionSyncResult collectionResult = syncCollectionManifests(index, collections);
@@ -945,10 +1003,15 @@ public final class DownloadToolsActivity extends Activity {
                     missingCollectionTracks = collectionResult.missingTracks;
                     collectionFailures = collectionResult.failures;
                     collectionSummary = collectionResult.summary;
+                    if (deletionSyncSafe) {
+                        deletedCollections = index.removeCollectionsNotIn(activeCollectionKeys);
+                    }
                 } else {
                     collectionSummary = "Could not read MySpoti collection index: " + collectionError;
                     collectionFailures++;
                 }
+                if (deletionSyncSafe) Log.i("MyspotiStoragePatch", "Deletion sync removed " + deletedTracks
+                        + " exported song(s) and " + deletedCollections + " obsolete collection manifest(s)");
                 archiveCount = index.count();
                 savedCollectionCount = index.collectionCount();
                 archiveSummary = index.summary();
@@ -996,7 +1059,7 @@ public final class DownloadToolsActivity extends Activity {
                 if (error != null && failureCount > 0) message += " Last error: " + error;
                 Toast.makeText(this, message, Toast.LENGTH_LONG).show();
                 if (exportSyncStatus != null) exportSyncStatus.setText(failureCount == 0
-                        ? "Last check complete. New songs, lyrics and downloaded playlists/albums are checked automatically whenever this screen opens."
+                        ? "Last sync complete. Auto-sync watches completed song downloads and playlist/album changes in the background when enabled."
                         : "Sync finished with " + failureCount + " problem(s). Check folder permissions and try Sync now.");
                 if (exportArchiveStatus != null) exportArchiveStatus.setText(savedSummary.isEmpty()
                         ? savedCount + " song record(s) in the portable export index. The index and lyrics sidecars are stored in the selected folder, not in app data."
@@ -1014,6 +1077,7 @@ public final class DownloadToolsActivity extends Activity {
                 }
                 refreshSummary();
             });
+            }
         });
     }
 

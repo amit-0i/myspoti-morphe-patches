@@ -27,6 +27,7 @@ final class ExportIndex {
     static final String PREFS = "morphe_download_tools";
     static final String PREF_EXPORT_TREE_URI = "export_tree_uri";
     static final String PREF_AUTO_SYNC = "export_auto_sync";
+    static final String PREF_DELETE_REMOVED = "export_delete_removed";
     static final String INDEX_NAME = "MySpoti Export Index.json";
     private static final String FORMAT = "myspoti-export-index";
     private static final int VERSION = 4;
@@ -142,6 +143,102 @@ final class ExportIndex {
 
     int count() { return entries.length(); }
     int collectionCount() { return collectionEntries.length(); }
+
+    /**
+     * Delete only tracks that were previously exported by this index and are no longer
+     * present in MySpoti's completed offline store. Every file is addressed by its recorded
+     * SAF document ID; arbitrary files in the user's folder are never scanned or removed.
+     */
+    int removeTracksNotIn(java.util.Set<String> retainedTrackIds) throws Exception {
+        java.util.Set<String> retained = retainedTrackIds == null
+                ? java.util.Collections.<String>emptySet() : retainedTrackIds;
+        List<String> removed = new ArrayList<>();
+        java.util.Iterator<String> keys = entries.keys();
+        while (keys.hasNext()) {
+            String trackId = keys.next();
+            if (!retained.contains(trackId)) removed.add(trackId);
+        }
+        if (removed.isEmpty()) return 0;
+
+        for (String trackId : removed) {
+            JSONObject item = entries.optJSONObject(trackId);
+            if (item == null) continue;
+            deleteRecordedDocument(item.optString("documentId", ""));
+            deleteRecordedDocument(item.optString("lyricsJsonDocumentId", ""));
+            deleteRecordedDocument(item.optString("lyricsLrcDocumentId", ""));
+            entries.remove(trackId);
+        }
+
+        // Keep portable collection metadata consistent while preserving membership for
+        // tracks that are queued in MySpoti but have not finished downloading yet.
+        java.util.Iterator<String> collectionKeys = collectionEntries.keys();
+        while (collectionKeys.hasNext()) {
+            JSONObject collection = collectionEntries.optJSONObject(collectionKeys.next());
+            if (collection == null) continue;
+            JSONArray exported = collection.optJSONArray("exportedTrackIds");
+            if (exported != null) {
+                JSONArray kept = new JSONArray();
+                for (int i = 0; i < exported.length(); i++) {
+                    String id = exported.optString(i, "");
+                    if (!removed.contains(id)) kept.put(id);
+                }
+                collection.put("exportedTrackIds", kept);
+                collection.put("exportedTrackCount", kept.length());
+                JSONArray members = collection.optJSONArray("trackIds");
+                collection.put("notYetExportedTrackCount", Math.max(0,
+                        (members == null ? 0 : members.length()) - kept.length()));
+            }
+        }
+
+        JSONArray singles = root.optJSONArray("singles");
+        if (singles != null) {
+            JSONArray keptSingles = new JSONArray();
+            for (int i = 0; i < singles.length(); i++) {
+                String id = singles.optString(i, "");
+                if (!removed.contains(id)) keptSingles.put(id);
+            }
+            root.put("singles", keptSingles);
+        }
+        save();
+        return removed.size();
+    }
+
+    /** Remove playlist/album manifests only when MySpoti's collection index was read safely. */
+    int removeCollectionsNotIn(java.util.Set<String> retainedCollectionKeys) throws Exception {
+        java.util.Set<String> retained = retainedCollectionKeys == null
+                ? java.util.Collections.<String>emptySet() : retainedCollectionKeys;
+        List<String> removed = new ArrayList<>();
+        java.util.Iterator<String> keys = collectionEntries.keys();
+        while (keys.hasNext()) {
+            String key = keys.next();
+            if (!retained.contains(key)) removed.add(key);
+        }
+        for (String key : removed) {
+            JSONObject item = collectionEntries.optJSONObject(key);
+            if (item != null) deleteRecordedDocument(item.optString("documentId", ""));
+            collectionEntries.remove(key);
+        }
+        if (!removed.isEmpty()) save();
+        return removed.size();
+    }
+
+    void replaceSingleTrackIds(Iterable<String> trackIds) throws Exception {
+        JSONArray values = new JSONArray();
+        if (trackIds != null) for (String id : trackIds) {
+            if (id != null && !id.trim().isEmpty()) values.put(id);
+        }
+        root.put("singles", values);
+        save();
+    }
+
+    private void deleteRecordedDocument(String documentId) throws Exception {
+        if (documentId == null || documentId.isEmpty()) return;
+        Uri document = documentUri(documentId);
+        if (!documentExists(document)) return;
+        if (!deleteDocument(document)) {
+            throw new IOException("Android could not delete an exported file. The remaining export records were kept.");
+        }
+    }
 
     int lyricsCount() {
         int count = 0;
@@ -393,9 +490,13 @@ final class ExportIndex {
         return matches;
     }
 
-    void deleteDocument(Uri document) {
-        if (document == null) return;
-        try { DocumentsContract.deleteDocument(resolver, document); } catch (Throwable ignored) {}
+    boolean deleteDocument(Uri document) {
+        if (document == null) return true;
+        try { return DocumentsContract.deleteDocument(resolver, document); }
+        catch (Throwable error) {
+            android.util.Log.w("MyspotiStoragePatch", "Could not delete generated export document", error);
+            return false;
+        }
     }
 
     Uri createDocument(String mime, String displayName) throws Exception {

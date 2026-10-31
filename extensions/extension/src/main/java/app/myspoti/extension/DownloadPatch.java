@@ -4,11 +4,13 @@ import android.app.Activity;
 import android.app.Application;
 import android.content.Context;
 import android.content.Intent;
+import android.net.Uri;
 import android.graphics.Color;
 import android.graphics.Typeface;
 import android.graphics.drawable.GradientDrawable;
 import android.os.Bundle;
 import android.os.Environment;
+import android.os.FileObserver;
 import android.os.Handler;
 import android.os.Looper;
 import android.media.MediaMetadataRetriever;
@@ -43,6 +45,8 @@ import java.util.Map;
 import java.util.Set;
 import java.util.WeakHashMap;
 import java.util.concurrent.FutureTask;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 
 /**
  * Runtime bridge for the R8-minified Myspoti 2.2.0 stable APK.
@@ -67,6 +71,20 @@ public final class DownloadPatch {
     private static final Object ACTION_TAG = new Object();
     private static final Map<Activity, View> DOWNLOAD_ACTIONS = new WeakHashMap<>();
 
+    private static final Object AUTO_SYNC_OBSERVER_LOCK = new Object();
+    private static final Object EXPORT_SYNC_LOCK = new Object();
+    private static final Handler AUTO_SYNC_HANDLER = new Handler(Looper.getMainLooper());
+    private static final ExecutorService AUTO_SYNC_EXECUTOR = Executors.newSingleThreadExecutor(r -> {
+        Thread thread = new Thread(r, "myspoti-export-auto-sync");
+        thread.setPriority(Thread.MIN_PRIORITY);
+        return thread;
+    });
+    private static FileObserver autoSyncObserver;
+    private static String autoSyncObservedPath;
+    private static Runnable pendingAutoSync;
+    private static boolean autoSyncRunning;
+    private static boolean autoSyncAgain;
+
     private DownloadPatch() {}
 
     /** Called from MyspotiApplication.onCreate. Keeps an application context for storage helpers. */
@@ -80,6 +98,8 @@ public final class DownloadPatch {
                         @Override public void onActivityStarted(Activity activity) {}
                         @Override public void onActivityResumed(Activity activity) {
                             if (!(activity instanceof DownloadToolsActivity)) foregroundActivity = activity;
+                            Context current = appContext;
+                            if (current != null) startAutoSyncObserver(current);
                         }
                         @Override public void onActivityPaused(Activity activity) {
                             if (foregroundActivity == activity) foregroundActivity = null;
@@ -95,6 +115,7 @@ public final class DownloadPatch {
                 }
             }
         }
+        startAutoSyncObserver(appContext);
     }
 
     /** Called only while Myspoti's Settings > Downloads composable is being composed. */
@@ -274,6 +295,7 @@ public final class DownloadPatch {
         if (!setCollectionsFileAndRead(appContext)) {
             Log.w(TAG, "Could not reopen downloaded-list index at the selected location");
         }
+        startAutoSyncObserver(appContext);
     }
 
     /** Current offline folder. Only app-owned File-based volumes are supported for playback. */
@@ -290,7 +312,167 @@ public final class DownloadPatch {
     public static File storageRootNoArg() {
         Context context = appContext;
         if (context == null) throw new IllegalStateException("Myspoti application context is not ready");
-        return storageRoot(context);
+        File root = storageRoot(context);
+        startAutoSyncObserver(context);
+        return root;
+    }
+
+    /** True only when both native indexes parse and match loaded app state, never during a partial load. */
+    public static boolean canMirrorDeletedDownloads(Context context, Set<String> expectedTrackIds,
+            Set<String> expectedCollectionKeys, Set<String> expectedSingleIds) {
+        if (expectedTrackIds == null || expectedCollectionKeys == null || expectedSingleIds == null) return false;
+        Context app = context.getApplicationContext();
+        File root = storageRoot(app);
+        File nativeIndex = new File(root, "index.json");
+        File nativeBackup = new File(root, "index.json.bak");
+        File collectionIndex = new File(root, "collections.json");
+        if ((!nativeIndex.isFile() && !nativeBackup.isFile()) || !collectionIndex.isFile()) return false;
+        try {
+            JSONArray persisted = readNativeIndex(nativeIndex, nativeBackup);
+            Set<String> persistedIds = new LinkedHashSet<>();
+            for (int i = 0; i < persisted.length(); i++) {
+                JSONObject item = persisted.optJSONObject(i);
+                if (item == null) throw new IOException("A download index entry is incomplete.");
+                String id = item.optString("id", "");
+                String filename = item.optString("file", "");
+                if (id.isEmpty() || filename.isEmpty() || !persistedIds.add(id)) {
+                    throw new IOException("A download index entry has an invalid or duplicate identity.");
+                }
+            }
+            Set<String> loadedIds = new LinkedHashSet<>();
+            for (Object track : downloadedTracks(app)) {
+                String id = trackId(track);
+                if (id == null || id.isEmpty() || !loadedIds.add(id)) {
+                    throw new IOException("The in-memory download list is incomplete.");
+                }
+            }
+            // A mismatch usually means the app is still loading/reopening its index. Never
+            // interpret that transient state as a user's mass deletion.
+            if (!persistedIds.equals(loadedIds) || !persistedIds.equals(expectedTrackIds)) return false;
+
+            JSONObject collections = new JSONObject(readText(collectionIndex));
+            JSONArray persistedLists = collections.optJSONArray("lists");
+            JSONArray persistedSinglesArray = collections.optJSONArray("singles");
+            if (persistedLists == null || persistedSinglesArray == null) {
+                throw new IOException("The downloaded collection index is incomplete.");
+            }
+            Set<String> persistedCollectionKeys = new LinkedHashSet<>();
+            for (int i = 0; i < persistedLists.length(); i++) {
+                JSONObject item = persistedLists.optJSONObject(i);
+                if (item == null) throw new IOException("A downloaded collection entry is incomplete.");
+                String uri = item.optString("uri", "");
+                String type = item.optString("type", "");
+                if (uri.isEmpty() || type.isEmpty() || !persistedCollectionKeys.add(type + "|" + uri)) {
+                    throw new IOException("A downloaded collection entry has an invalid or duplicate identity.");
+                }
+            }
+            Set<String> loadedCollectionKeys = new LinkedHashSet<>();
+            for (CollectionSnapshot collection : downloadedCollections()) {
+                loadedCollectionKeys.add(collection.type + "|" + collection.uri);
+            }
+            if (!persistedCollectionKeys.equals(loadedCollectionKeys)
+                    || !persistedCollectionKeys.equals(expectedCollectionKeys)) return false;
+
+            Set<String> persistedSingles = new LinkedHashSet<>();
+            for (int i = 0; i < persistedSinglesArray.length(); i++) {
+                String id = persistedSinglesArray.optString(i, "");
+                if (id.isEmpty() || !persistedSingles.add(id)) {
+                    throw new IOException("The individual-download index is incomplete.");
+                }
+            }
+            if (!persistedSingles.equals(downloadedSingles())
+                    || !persistedSingles.equals(expectedSingleIds)) return false;
+            return true;
+        } catch (Throwable error) {
+            Log.w(TAG, "Skipped export deletion sync because MySpoti's native indexes are not readable or fully loaded", error);
+            return false;
+        }
+    }
+
+    /** Shared lock also serializes manual and background export writes to the same SAF index. */
+    static Object exportSyncLock() { return EXPORT_SYNC_LOCK; }
+
+    /** Watch MySpoti's atomically replaced native indexes, not transient audio temp files. */
+    private static void startAutoSyncObserver(Context context) {
+        if (context == null) return;
+        Context app = context.getApplicationContext();
+        File root = storageRoot(app);
+        if (!root.exists() && !root.mkdirs()) {
+            Log.w(TAG, "Could not create the offline folder for the export sync observer");
+            return;
+        }
+        final String path = root.getAbsolutePath();
+        synchronized (AUTO_SYNC_OBSERVER_LOCK) {
+            if (path.equals(autoSyncObservedPath) && autoSyncObserver != null) return;
+            if (autoSyncObserver != null) {
+                try { autoSyncObserver.stopWatching(); } catch (Throwable ignored) {}
+                autoSyncObserver = null;
+            }
+            autoSyncObservedPath = path;
+            autoSyncObserver = new FileObserver(path,
+                    FileObserver.CLOSE_WRITE | FileObserver.MOVED_TO | FileObserver.CREATE) {
+                @Override public void onEvent(int event, String name) {
+                    if (name == null || "index.json".equals(name) || "collections.json".equals(name)) {
+                        scheduleAutoSync(app);
+                    }
+                }
+            };
+            autoSyncObserver.startWatching();
+            Log.i(TAG, "Watching native Downloads and collection indexes for export auto-sync");
+        }
+    }
+
+    private static void scheduleAutoSync(Context context) {
+        Context app = context.getApplicationContext();
+        if (!app.getSharedPreferences(ExportIndex.PREFS, Context.MODE_PRIVATE)
+                .getBoolean(ExportIndex.PREF_AUTO_SYNC, false)) return;
+        String tree = app.getSharedPreferences(ExportIndex.PREFS, Context.MODE_PRIVATE)
+                .getString(ExportIndex.PREF_EXPORT_TREE_URI, null);
+        if (tree == null || tree.trim().isEmpty()) return;
+        synchronized (AUTO_SYNC_OBSERVER_LOCK) {
+            if (pendingAutoSync != null) AUTO_SYNC_HANDLER.removeCallbacks(pendingAutoSync);
+            pendingAutoSync = () -> {
+                synchronized (AUTO_SYNC_OBSERVER_LOCK) { pendingAutoSync = null; }
+                startAutoSync(app);
+            };
+            AUTO_SYNC_HANDLER.postDelayed(pendingAutoSync, 1400L);
+        }
+    }
+
+    private static void startAutoSync(Context context) {
+        Context app = context.getApplicationContext();
+        android.content.SharedPreferences preferences = app.getSharedPreferences(ExportIndex.PREFS, Context.MODE_PRIVATE);
+        if (!preferences.getBoolean(ExportIndex.PREF_AUTO_SYNC, false)) return;
+        String value = preferences.getString(ExportIndex.PREF_EXPORT_TREE_URI, null);
+        if (value == null || value.trim().isEmpty()) return;
+        final Uri tree;
+        try { tree = Uri.parse(value); }
+        catch (Throwable error) { Log.w(TAG, "Invalid saved export folder URI", error); return; }
+
+        synchronized (AUTO_SYNC_OBSERVER_LOCK) {
+            if (autoSyncRunning) {
+                autoSyncAgain = true;
+                return;
+            }
+            autoSyncRunning = true;
+            autoSyncAgain = false;
+        }
+        AUTO_SYNC_EXECUTOR.execute(() -> {
+            try {
+                boolean deleteRemoved = preferences.getBoolean(ExportIndex.PREF_DELETE_REMOVED, false);
+                ExportSyncRunner.sync(app, tree, deleteRemoved);
+            } catch (Throwable error) {
+                Log.w(TAG, "Automatic export sync did not complete", error);
+            } finally {
+                boolean runAgain;
+                synchronized (AUTO_SYNC_OBSERVER_LOCK) {
+                    autoSyncRunning = false;
+                    runAgain = autoSyncAgain;
+                    autoSyncAgain = false;
+                }
+                if (runAgain) scheduleAutoSync(app);
+            }
+        });
     }
 
     public static String selectedStorageId(Context context) {
@@ -1104,12 +1286,16 @@ public final class DownloadPatch {
 
     /** Reopen both Compose-backed indexes on the main thread, matching Myspoti's own contract. */
     private static boolean reloadOnMainThread(Context context) throws Exception {
+        boolean loaded;
         if (Looper.myLooper() == Looper.getMainLooper()) {
-            return loadStore(context) && setCollectionsFileAndRead(context);
+            loaded = loadStore(context) && setCollectionsFileAndRead(context);
+        } else {
+            FutureTask<Boolean> task = new FutureTask<>(() -> loadStore(context) && setCollectionsFileAndRead(context));
+            new Handler(Looper.getMainLooper()).post(task);
+            loaded = task.get();
         }
-        FutureTask<Boolean> task = new FutureTask<>(() -> loadStore(context) && setCollectionsFileAndRead(context));
-        new Handler(Looper.getMainLooper()).post(task);
-        return task.get();
+        if (loaded) startAutoSyncObserver(context);
+        return loaded;
     }
 
     private static boolean loadStore(Context context) {
