@@ -86,7 +86,9 @@ public final class DownloadToolsActivity extends Activity {
         configureWindow();
         buildUi();
         refreshSummary();
-        autoSyncSavedFolder();
+        // Opening this screen is read-only: show the saved archive/sync state, but
+        // never start an automatic export pass just because the user viewed the page.
+        showSavedExportStatus();
     }
 
     @Override protected void onResume() {
@@ -638,6 +640,29 @@ public final class DownloadToolsActivity extends Activity {
         offerRestoreAfterFolderReconnect(tree);
     }
 
+    private void showSavedExportStatus() {
+        if (ExportSyncCoordinator.isRunning()) {
+            renderSyncCoordinatorStatus();
+            return;
+        }
+        android.content.SharedPreferences preferences = getSharedPreferences(ExportIndex.PREFS, MODE_PRIVATE);
+        boolean enabled = preferences.getBoolean(ExportIndex.PREF_AUTO_SYNC, false);
+        String value = preferences.getString(ExportIndex.PREF_EXPORT_TREE_URI, null);
+        if (value == null || value.trim().isEmpty()) {
+            if (exportSyncStatus != null) exportSyncStatus.setText(enabled
+                    ? "Auto-sync is on. Choose an export folder to automatically export future downloads and collection changes."
+                    : "Choose an export folder, then use Sync now to export songs, playlists and albums.");
+            if (exportArchiveStatus != null) exportArchiveStatus.setText(
+                    "The export index will be stored inside your chosen folder.");
+            return;
+        }
+        if (exportSyncStatus != null) exportSyncStatus.setText(enabled
+                ? "Auto-sync is on. New downloads and playlist/album changes will be exported automatically. Use Sync now to check existing exports."
+                : "Auto-sync is off. Use Sync now to update songs, playlists and albums.");
+        // Reading the archive summary does not start a sync or modify exported files.
+        loadSavedArchiveSummary();
+    }
+
     private void autoSyncSavedFolder() {
         // Reopening this screen must attach to an existing sync, not start another
         // export pass that waits behind the first pass's SAF lock.
@@ -655,7 +680,7 @@ public final class DownloadToolsActivity extends Activity {
         String value = getSharedPreferences(ExportIndex.PREFS, MODE_PRIVATE)
                 .getString(ExportIndex.PREF_EXPORT_TREE_URI, null);
         if (value == null || value.trim().isEmpty()) {
-            if (exportSyncStatus != null) exportSyncStatus.setText("Choose an export folder once. MySpoti will check it automatically on future visits.");
+            if (exportSyncStatus != null) exportSyncStatus.setText("Choose an export folder once. New downloads and playlist/album changes will then sync automatically.");
             if (exportArchiveStatus != null) exportArchiveStatus.setText("After reinstalling, choose the same folder again; its export index remains beside your music.");
             return;
         }

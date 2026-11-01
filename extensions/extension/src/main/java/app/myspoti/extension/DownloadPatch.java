@@ -417,7 +417,9 @@ public final class DownloadPatch {
             autoSyncObserver = new FileObserver(path,
                     FileObserver.CLOSE_WRITE | FileObserver.MOVED_TO | FileObserver.CREATE) {
                 @Override public void onEvent(int event, String name) {
-                    if (name == null || "index.json".equals(name) || "collections.json".equals(name)) {
+                    // Ignore nameless/overflow notifications; only durable native index files
+                    // represent a concrete download or collection change worth syncing.
+                    if ("index.json".equals(name) || "collections.json".equals(name)) {
                         scheduleAutoSync(app);
                     }
                 }
@@ -440,7 +442,6 @@ public final class DownloadPatch {
             return;
         }
         final String path = directory.getAbsolutePath();
-        boolean started = false;
         synchronized (AUTO_SYNC_OBSERVER_LOCK) {
             if (path.equals(lyricsCacheObservedPath) && lyricsCacheObserver != null) return;
             if (lyricsCacheObserver != null) {
@@ -455,12 +456,10 @@ public final class DownloadPatch {
                 }
             };
             lyricsCacheObserver.startWatching();
-            started = true;
-            Log.i(TAG, "Watching MySpoti's native lyrics cache for export auto-sync");
+            Log.i(TAG, "Watching MySpoti's native lyrics cache for future writes; no startup sync queued");
         }
-        // On the first launch after installing this update, run one pass when opted in so
-        // already-downloaded tracks can be backfilled without waiting for another file event.
-        if (started) scheduleAutoSync(app);
+        // Observer installation is not a sync trigger. Existing downloaded tracks are
+        // exported only after a real file change or an explicit user Sync now action.
     }
 
     private static void scheduleAutoSync(Context context) {
