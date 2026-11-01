@@ -158,7 +158,8 @@ final class ExportSyncRunner {
                                     DownloadPatch.trackDurationMs(track), extension, source.length(), true, displayName,
                                     DownloadPatch.trackAlbumId(track), DownloadPatch.trackCoverUrl(track),
                                     DownloadPatch.trackSource(track), DownloadPatch.trackVerified(track),
-                                    DownloadPatch.trackKind(track), DownloadPatch.trackProviderId(track));
+                                    DownloadPatch.trackKind(track), DownloadPatch.trackProviderId(track),
+                                    DownloadPatch.trackExtensionQuality(track));
                         } else {
                             displayName = addTrackIdSuffix(displayName, trackId);
                             destination = index.createDocumentInPath(mime(extension), displayName, "Tracks");
@@ -184,7 +185,8 @@ final class ExportSyncRunner {
                                 DownloadPatch.trackDurationMs(track), extension, exportedBytes, legacyImported, relativePath,
                                 DownloadPatch.trackAlbumId(track), DownloadPatch.trackCoverUrl(track),
                                 DownloadPatch.trackSource(track), DownloadPatch.trackVerified(track),
-                                DownloadPatch.trackKind(track), DownloadPatch.trackProviderId(track));
+                                DownloadPatch.trackKind(track), DownloadPatch.trackProviderId(track),
+                                DownloadPatch.trackExtensionQuality(track));
                         exported++;
                     } else {
                         skipped++;

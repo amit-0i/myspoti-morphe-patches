@@ -169,7 +169,7 @@ final class ExportIndex {
             root.put("format", FORMAT);
             root.put("version", VERSION);
             root.put("appPackage", "app.myspoti.stable");
-            root.put("appVersion", "2.2.0");
+            root.put("appVersion", "2.3.0");
             root.put("createdAt", System.currentTimeMillis());
             root.put("entries", entries);
             root.put("collections", collectionEntries);
@@ -951,14 +951,14 @@ final class ExportIndex {
                 String title, String artist, String album, long durationMs, String extension,
                 long exportedBytes, boolean importedLegacy, String relativePathFromRoot) throws Exception {
         record(trackId, fingerprint, document, displayName, title, artist, album, durationMs,
-                extension, exportedBytes, importedLegacy, relativePathFromRoot, "", "", "", false, "MUSIC", "");
+                extension, exportedBytes, importedLegacy, relativePathFromRoot, "", "", "", false, "MUSIC", "", "");
     }
 
     void record(String trackId, String fingerprint, Uri document, String displayName,
                 String title, String artist, String album, long durationMs, String extension,
                 long exportedBytes, boolean importedLegacy, String relativePathFromRoot,
                 String albumId, String coverUrl, String source, boolean verified,
-                String kind, String providerId) throws Exception {
+                String kind, String providerId, String extensionQuality) throws Exception {
         if (trackId == null || trackId.isEmpty()) throw new IOException("The MySpoti track ID is missing; cannot create a reliable sync record.");
         JSONObject item = new JSONObject();
         item.put("trackId", trackId);
@@ -977,6 +977,7 @@ final class ExportIndex {
         item.put("verified", verified);
         item.put("kind", kind == null || kind.isEmpty() ? "MUSIC" : kind);
         item.put("providerId", providerId == null ? "" : providerId);
+        item.put("extensionQuality", extensionQuality == null ? "" : extensionQuality);
         JSONObject previous = entries.optJSONObject(trackId);
         if (previous != null) {
             String[] preserved = new String[] { "lyricsJsonDocumentId", "lyricsLrcDocumentId", "lyricsJsonFileName", "lyricsLrcFileName", "lyricsProvider", "lyricsLanguage" };

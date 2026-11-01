@@ -49,9 +49,9 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
 /**
- * Runtime bridge for the R8-minified Myspoti 2.2.0 stable APK.
- * Verified APK mappings: OfflineStore=ud5, OfflineTrack=vd5,
- * OfflineCrypto=lc5, OfflineCollections=ic5, OfflineAccounts=cc5.
+ * Runtime bridge for the R8-minified MySpoti 2.3.0 stable APK.
+ * Verified APK mappings: OfflineStore=fj5, OfflineTrack=gj5,
+ * OfflineCrypto=vh5, OfflineCollections=sh5, OfflineCollection=nh5, OfflineAccounts=mh5.
  * Myspoti source origin: https://github.com/kota-zo/myspoti (GPL-3.0).
  */
 public final class DownloadPatch {
@@ -59,14 +59,15 @@ public final class DownloadPatch {
     private static final String PREFS = "morphe_download_tools";
     private static final String PREF_LOCATION = "storage_id";
 
-    // R8 class names and member names are pinned to the inspected 2.2.0 stable APK.
-    private static final String STORE = "ud5";
-    private static final String TRACK = "vd5";
-    private static final String CRYPTO = "lc5";
-    private static final String COLLECTIONS = "ic5";
+    // R8 class names and member names are pinned to the inspected 2.3.0 stable APK.
+    private static final String STORE = "fj5";
+    private static final String TRACK = "gj5";
+    private static final String CRYPTO = "vh5";
+    private static final String COLLECTIONS = "sh5";
 
     private static volatile Context appContext;
     private static volatile Activity foregroundActivity;
+    private static volatile boolean settingsActionRequested;
     private static boolean activityCallbacksInstalled;
     private static final Object ACTION_TAG = new Object();
     private static final Map<Activity, View> DOWNLOAD_ACTIONS = new WeakHashMap<>();
@@ -120,20 +121,23 @@ public final class DownloadPatch {
         startAutoSyncObserver(appContext);
     }
 
-    /** Called only while Myspoti's Settings > Downloads composable is being composed. */
+    /** Called from the Classic Settings composable immediately before its Downloads tab content. */
     public static void showForCurrentActivity() {
+        settingsActionRequested = true;
         attachForForegroundActivity(0);
     }
 
-    /** Called by the Settings page router before it composes the newly selected subpage. */
+    /** Clears the action at the start of each Settings page/tab render; Downloads re-adds it. */
     public static void hideSettingsAction() {
+        settingsActionRequested = false;
         Activity activity = foregroundActivity;
         if (activity == null) return;
         runOnMain(() -> removeDownloadsAction(activity));
-        Log.i(TAG, "Settings subpage changed; removed Export & storage action");
+        Log.i(TAG, "Settings page changed; removed Export & storage action");
     }
 
     private static void attachForForegroundActivity(int attempt) {
+        if (!settingsActionRequested) return;
         Activity activity = foregroundActivity;
         if (activity == null || activity.isFinishing() || activity.isDestroyed()) {
             if (attempt < 10) {
@@ -150,6 +154,7 @@ public final class DownloadPatch {
 
     /** Direct trigger from the inspected Classic Downloads composable (legacy compatibility). */
     public static void showFromDownloadsScreen(Object navController) {
+        settingsActionRequested = true;
         Activity activity = activityFromNavController(navController);
         if (activity == null || activity.isFinishing() || activity.isDestroyed()) {
             Log.w(TAG, "Classic Downloads screen composed, but host Activity was not available");
@@ -160,7 +165,7 @@ public final class DownloadPatch {
     }
 
     /**
-     * APK 2.2.0 mapping verified from DEX: NavController Le65 has field b (Lh65),
+     * Legacy NavController mapping (not used by the 2.3.0 Settings hook): NavController Le65 has field b (Lh65),
      * Lh65.h() returns the current NavDestination Lq65, whose field c is its route String.
      */
     private static String currentDestinationRoute(Object navController) {
@@ -183,7 +188,7 @@ public final class DownloadPatch {
     private static Activity activityFromNavController(Object navController) {
         if (navController == null) return null;
         try {
-            // In MySpoti 2.2.0, the obfuscated NavController stores its host Activity in field d.
+            // The old NavController host-Activity field was d; if that changes, use the resumed Activity fallback.
             Field host = navController.getClass().getDeclaredField("d");
             host.setAccessible(true);
             Object value = host.get(navController);
@@ -196,11 +201,11 @@ public final class DownloadPatch {
     }
 
     private static void attachDownloadsActionWhenReady(Activity activity, int attempt) {
-        if (activity == null || activity.isFinishing() || activity.isDestroyed()) return;
+        if (!settingsActionRequested || activity == null || activity.isFinishing() || activity.isDestroyed()) return;
         View decor = activity.getWindow() == null ? null : activity.getWindow().getDecorView();
         if (decor == null) return;
         decor.post(() -> {
-            if (activity.isFinishing() || activity.isDestroyed()) return;
+            if (!settingsActionRequested || activity.isFinishing() || activity.isDestroyed()) return;
             View content = activity.findViewById(android.R.id.content);
             if (content instanceof FrameLayout) {
                 attachDownloadsAction(activity, (FrameLayout) content);
@@ -216,7 +221,7 @@ public final class DownloadPatch {
     }
 
     private static void attachDownloadsAction(Activity activity, FrameLayout root) {
-        if (activity.isFinishing() || activity.isDestroyed()) return;
+        if (!settingsActionRequested || activity.isFinishing() || activity.isDestroyed()) return;
         root.setClipChildren(false);
         root.setClipToPadding(false);
         View current = root.findViewWithTag(ACTION_TAG);
@@ -611,8 +616,8 @@ public final class DownloadPatch {
 
     /**
      * Snapshot of whole downloaded playlists, albums and Liked Songs.
-     * APK 2.2.0 DEX mapping: ic5.e is SnapshotStateMap<String, dc5>;
-     * dc5 fields a/b/c/d are uri/type/name/trackIds respectively.
+     * APK 2.3.0 DEX mapping: sh5.e is SnapshotStateMap<String, nh5>;
+     * nh5 fields a/b/c/d are uri/type/name/trackIds respectively.
      */
     public static List<CollectionSnapshot> downloadedCollections() throws Exception {
         Class<?> collectionsClass = Class.forName(COLLECTIONS);
@@ -706,6 +711,7 @@ public final class DownloadPatch {
     }
     public static String trackKind(Object track) { return safeTrackString(track, "n"); }
     public static String trackProviderId(Object track) { return safeTrackString(track, "o"); }
+    public static String trackExtensionQuality(Object track) { return safeTrackString(track, "p"); }
     public static long trackDurationMs(Object track) { return trackLong(track, "f"); }
 
     /** Individually downloaded songs, persisted separately from downloaded collection membership. */
@@ -820,6 +826,8 @@ public final class DownloadPatch {
                 nativeTrack.put("kind", portable.optString("kind", "MUSIC"));
                 String providerId = portable.optString("providerId", "");
                 if (!providerId.isEmpty()) nativeTrack.put("providerId", providerId);
+                String extensionQuality = portable.optString("extensionQuality", "");
+                if (!extensionQuality.isEmpty()) nativeTrack.put("extQuality", extensionQuality);
                 mergedIndex.put(nativeTrack);
                 availableIds.add(trackId);
                 result.restored++;
@@ -1371,7 +1379,7 @@ public final class DownloadPatch {
             Class<?> store = Class.forName(STORE);
             Object statuses = declaredField(store, "e").get(null);
             if (statuses instanceof Map) ((Map<?, ?>) statuses).clear();
-            Method load = store.getDeclaredMethod("k", File.class);
+            Method load = store.getDeclaredMethod("n", File.class);
             load.setAccessible(true);
             Object result = load.invoke(null, storageRoot(context));
             return result instanceof List;
@@ -1381,7 +1389,7 @@ public final class DownloadPatch {
         }
     }
 
-    /** The R8-mapped OfflineCollections.file field is ic5.b; collections are ic5.e; singles are ic5.f. */
+    /** The R8-mapped OfflineCollections.file field is sh5.b; collections are sh5.e; singles are sh5.f. */
     private static boolean setCollectionsFileAndRead(Context context) {
         try {
             Class<?> collections = Class.forName(COLLECTIONS);
@@ -1394,7 +1402,7 @@ public final class DownloadPatch {
             if (singles instanceof Set) ((Set<?>) singles).clear();
 
             if (index.isFile()) {
-                Method read = collections.getDeclaredMethod("f", String.class);
+                Method read = collections.getDeclaredMethod("g", String.class);
                 read.setAccessible(true);
                 read.invoke(null, readText(index));
             }
