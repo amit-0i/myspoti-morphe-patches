@@ -40,21 +40,24 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
 /**
- * Spotify-inspired offline tools screen opened from MySpoti Settings > Downloads.
- * Keeps export, tagging, artwork and storage-migration behavior in the same Activity.
+ * Offline tools screen opened from MySpoti Settings > Downloads.
+ * Both appearances mirror MySpoti's own Classic and Immersive palettes and accent preferences.
+ * Export, tagging, artwork and storage-migration behavior remain unchanged.
  */
 public final class DownloadToolsActivity extends Activity {
     private static final int REQUEST_EXPORT_FOLDER = 741;
 
-    // Classic Spotify palette: near-black canvas, raised charcoal surfaces and green actions.
-    private static final int BG = Color.rgb(18, 18, 18);          // #121212
-    private static final int SURFACE = Color.rgb(36, 36, 36);     // #242424
-    private static final int SURFACE_ALT = Color.rgb(42, 42, 42); // #2A2A2A
-    private static final int DIVIDER = Color.rgb(58, 58, 58);
-    private static final int GREEN = Color.rgb(30, 215, 96);     // #1ED760
-    private static final int TEXT = Color.WHITE;
-    private static final int MUTED = Color.rgb(179, 179, 179);   // #B3B3B3
-    private static final int SUBTLE = Color.rgb(128, 128, 128);
+    // Both looks read their own accent preference; the surrounding surface palette follows the look.
+    private int BG = 0xFF121212;
+    private int SURFACE = 0xFF1F1F1F;
+    private int SURFACE_ALT = 0xFF282828;
+    private int DIVIDER = 0xFF3E3E3E;
+    private int ACCENT = 0xFF1ED760;
+    private int TEXT = Color.WHITE;
+    private int MUTED = 0xFFB3B3B3;
+    private int SUBTLE = 0xFF808080;
+    private boolean immersiveLook;
+    private Typeface immersiveTypeface;
 
     private final ExecutorService worker = Executors.newSingleThreadExecutor();
     private TextView trackCount;
@@ -83,6 +86,7 @@ public final class DownloadToolsActivity extends Activity {
 
     @Override protected void onCreate(Bundle state) {
         super.onCreate(state);
+        applyLookPalette();
         configureWindow();
         buildUi();
         refreshSummary();
@@ -121,6 +125,39 @@ public final class DownloadToolsActivity extends Activity {
         }
     }
 
+    /** Read the same look/accent preferences that MySpoti uses in its Compose theme. */
+    private void applyLookPalette() {
+        immersiveLook = MySpotiImmersiveStyle.isImmersive(this);
+        ACCENT = MySpotiImmersiveStyle.accent(this, immersiveLook);
+        // Match MySpoti's Classic Material color scheme, including its optional AMOLED black page.
+        BG = getSharedPreferences("energy_settings", MODE_PRIVATE)
+                .getBoolean("black_background", false) ? Color.BLACK : 0xFF121212;
+        SURFACE = 0xFF1F1F1F;
+        SURFACE_ALT = 0xFF282828;
+        DIVIDER = 0xFF3E3E3E;
+        TEXT = Color.WHITE;
+        MUTED = 0xFFB3B3B3;
+        SUBTLE = 0xFF808080;
+        if (immersiveLook) {
+            // Reuse MySpoti's packaged Inter font when present; fall back to the Android sans face
+            // on builds whose resource table does not expose it to the extension activity.
+            if (Build.VERSION.SDK_INT >= 26) {
+                int interId = getResources().getIdentifier("inter", "font", null);
+                if (interId != 0) {
+                    try { immersiveTypeface = getResources().getFont(interId); }
+                    catch (Throwable ignored) { immersiveTypeface = null; }
+                }
+            }
+            BG = MySpotiImmersiveStyle.PAGE;
+            SURFACE = MySpotiImmersiveStyle.RAISED;
+            SURFACE_ALT = MySpotiImmersiveStyle.GLASS_FILL;
+            DIVIDER = MySpotiImmersiveStyle.SEPARATOR;
+            TEXT = MySpotiImmersiveStyle.TEXT;
+            MUTED = MySpotiImmersiveStyle.TEXT_SECONDARY;
+            SUBTLE = MySpotiImmersiveStyle.TEXT_TERTIARY;
+        }
+    }
+
     private void configureWindow() {
         try {
             if (getActionBar() != null) getActionBar().hide();
@@ -138,6 +175,20 @@ public final class DownloadToolsActivity extends Activity {
         flags &= ~View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR;
         flags &= ~View.SYSTEM_UI_FLAG_LIGHT_NAVIGATION_BAR;
         decor.setSystemUiVisibility(flags);
+    }
+
+    /** Mirrors ImmersiveSwitchRow: white thumb, selected accent track, graphite off track. */
+    private void applySwitchColors(Switch control) {
+        int checkedThumb = immersiveLook ? Color.WHITE : ACCENT;
+        int uncheckedThumb = immersiveLook ? Color.WHITE : 0xFFB3B3B3;
+        int checkedTrack = MySpotiImmersiveStyle.withAlpha(ACCENT, immersiveLook ? 255 : 136);
+        int uncheckedTrack = immersiveLook ? 0xFF3A3A3F : 0xFF555555;
+        control.setThumbTintList(new ColorStateList(
+                new int[][] { new int[] { android.R.attr.state_checked }, new int[] {} },
+                new int[] { checkedThumb, uncheckedThumb }));
+        control.setTrackTintList(new ColorStateList(
+                new int[][] { new int[] { android.R.attr.state_checked }, new int[] {} },
+                new int[] { checkedTrack, uncheckedTrack }));
     }
 
     private void buildUi() {
@@ -195,13 +246,14 @@ public final class DownloadToolsActivity extends Activity {
         LinearLayout.LayoutParams crumbParams = new LinearLayout.LayoutParams(0, -2, 1f);
         crumbParams.leftMargin = dp(13);
         top.addView(breadcrumb, crumbParams);
-        TextView badge = label("OFFLINE", 10, GREEN, Typeface.BOLD);
+        TextView badge = label("OFFLINE", 10, ACCENT, Typeface.BOLD);
         badge.setLetterSpacing(0.12f);
         top.addView(badge);
         root.addView(top);
 
         addSpace(root, 25);
-        TextView title = label("Export & storage", 30, TEXT, Typeface.create("sans-serif-black", Typeface.NORMAL));
+        TextView title = label("Export & storage", immersiveLook ? 32 : 30, TEXT,
+                Typeface.create(immersiveLook ? "sans-serif" : "sans-serif-black", Typeface.BOLD));
         title.setLineSpacing(0, 1f);
         root.addView(title);
         addSpace(root, 5);
@@ -212,7 +264,7 @@ public final class DownloadToolsActivity extends Activity {
         LinearLayout overview = card();
         LinearLayout overviewHeader = row(this);
         overviewHeader.setGravity(Gravity.CENTER_VERTICAL);
-        TextView musicIcon = iconBadge("♫", GREEN, Color.BLACK, 46);
+        TextView musicIcon = iconBadge("♫", immersiveLook ? SURFACE_ALT : ACCENT, immersiveLook ? ACCENT : Color.BLACK, 46);
         overviewHeader.addView(musicIcon, new LinearLayout.LayoutParams(dp(46), dp(46)));
 
         LinearLayout overviewTitles = column();
@@ -222,7 +274,7 @@ public final class DownloadToolsActivity extends Activity {
         addSpace(overviewTitles, 3);
         overviewTitles.addView(label("Saved on this device", 12, MUTED, Typeface.NORMAL));
         overviewHeader.addView(overviewTitles, titleParams);
-        TextView localPill = label("LOCAL", 10, GREEN, Typeface.BOLD);
+        TextView localPill = label("LOCAL", 10, ACCENT, Typeface.BOLD);
         localPill.setLetterSpacing(0.08f);
         overviewHeader.addView(localPill);
         overview.addView(overviewHeader);
@@ -233,7 +285,7 @@ public final class DownloadToolsActivity extends Activity {
 
         LinearLayout metrics = row(this);
         LinearLayout countMetric = column();
-        trackCount = label("—", 27, TEXT, Typeface.create("sans-serif-black", Typeface.NORMAL));
+        trackCount = label("—", 27, TEXT, immersiveLook ? Typeface.create("sans-serif", Typeface.BOLD) : Typeface.create("sans-serif-black", Typeface.NORMAL));
         countMetric.addView(trackCount);
         addSpace(countMetric, 2);
         countMetric.addView(label("DOWNLOADED TRACKS", 10, MUTED, Typeface.BOLD));
@@ -247,7 +299,7 @@ public final class DownloadToolsActivity extends Activity {
         metrics.addView(metricDivider, metricDividerParams);
 
         LinearLayout sizeMetric = column();
-        storageSize = label("—", 27, TEXT, Typeface.create("sans-serif-black", Typeface.NORMAL));
+        storageSize = label("—", 27, TEXT, immersiveLook ? Typeface.create("sans-serif", Typeface.BOLD) : Typeface.create("sans-serif-black", Typeface.NORMAL));
         sizeMetric.addView(storageSize);
         addSpace(sizeMetric, 2);
         sizeMetric.addView(label("SPACE USED", 10, MUTED, Typeface.BOLD));
@@ -271,7 +323,7 @@ public final class DownloadToolsActivity extends Activity {
         LinearLayout exportCard = card();
         LinearLayout exportHeading = row(this);
         exportHeading.setGravity(Gravity.CENTER_VERTICAL);
-        exportHeading.addView(iconBadge("↗", GREEN, Color.BLACK, 42), new LinearLayout.LayoutParams(dp(42), dp(42)));
+        exportHeading.addView(iconBadge("↗", immersiveLook ? SURFACE_ALT : ACCENT, immersiveLook ? ACCENT : Color.BLACK, 42), new LinearLayout.LayoutParams(dp(42), dp(42)));
         LinearLayout exportTitleBlock = column();
         LinearLayout.LayoutParams exportTitleParams = new LinearLayout.LayoutParams(0, -2, 1f);
         exportTitleParams.leftMargin = dp(12);
@@ -299,7 +351,7 @@ public final class DownloadToolsActivity extends Activity {
         addSpace(exportCard, 18);
         LinearLayout exportButton = actionButton("Choose / reconnect export folder", true, "→");
         exportButton.setOnClickListener(v -> chooseExportFolder());
-        exportCard.addView(exportButton, new LinearLayout.LayoutParams(-1, dp(50)));
+        exportCard.addView(exportButton, new LinearLayout.LayoutParams(-1, dp(immersiveLook ? 50 : 50)));
         addSpace(exportCard, 10);
         TextView metadataNote = label("Title, artist, album and artwork are embedded where supported. Lyrics are saved separately in Lyrics/LRC and Lyrics/JSON. Audio is not re-encoded.", 11, SUBTLE, Typeface.NORMAL);
         metadataNote.setGravity(Gravity.CENTER);
@@ -317,12 +369,7 @@ public final class DownloadToolsActivity extends Activity {
         autoSyncRow.addView(autoSyncText, new LinearLayout.LayoutParams(0, -2, 1f));
         autoSyncSwitch = new Switch(this);
         autoSyncSwitch.setShowText(false);
-        autoSyncSwitch.setThumbTintList(new ColorStateList(
-                new int[][] { new int[] { android.R.attr.state_checked }, new int[] {} },
-                new int[] { GREEN, 0xFFB3B3B3 }));
-        autoSyncSwitch.setTrackTintList(new ColorStateList(
-                new int[][] { new int[] { android.R.attr.state_checked }, new int[] {} },
-                new int[] { 0x8830D760, 0xFF555555 }));
+        applySwitchColors(autoSyncSwitch);
         boolean autoSyncEnabled = getSharedPreferences(ExportIndex.PREFS, MODE_PRIVATE)
                 .getBoolean(ExportIndex.PREF_AUTO_SYNC, false);
         autoSyncSwitch.setChecked(autoSyncEnabled);
@@ -347,12 +394,7 @@ public final class DownloadToolsActivity extends Activity {
         deleteSyncRow.addView(deleteSyncText, new LinearLayout.LayoutParams(0, -2, 1f));
         deleteSyncSwitch = new Switch(this);
         deleteSyncSwitch.setShowText(false);
-        deleteSyncSwitch.setThumbTintList(new ColorStateList(
-                new int[][] { new int[] { android.R.attr.state_checked }, new int[] {} },
-                new int[] { GREEN, 0xFFB3B3B3 }));
-        deleteSyncSwitch.setTrackTintList(new ColorStateList(
-                new int[][] { new int[] { android.R.attr.state_checked }, new int[] {} },
-                new int[] { 0x8830D760, 0xFF555555 }));
+        applySwitchColors(deleteSyncSwitch);
         boolean deleteSyncEnabled = getSharedPreferences(ExportIndex.PREFS, MODE_PRIVATE)
                 .getBoolean(ExportIndex.PREF_DELETE_REMOVED, false);
         deleteSyncSwitch.setChecked(deleteSyncEnabled);
@@ -390,7 +432,7 @@ public final class DownloadToolsActivity extends Activity {
         LinearLayout collectionsCard = card();
         LinearLayout collectionsHeading = row(this);
         collectionsHeading.setGravity(Gravity.CENTER_VERTICAL);
-        collectionsHeading.addView(iconBadge("≡", GREEN, Color.BLACK, 42), new LinearLayout.LayoutParams(dp(42), dp(42)));
+        collectionsHeading.addView(iconBadge("≡", immersiveLook ? SURFACE_ALT : ACCENT, immersiveLook ? ACCENT : Color.BLACK, 42), new LinearLayout.LayoutParams(dp(42), dp(42)));
         LinearLayout collectionsTitleBlock = column();
         LinearLayout.LayoutParams collectionsTitleParams = new LinearLayout.LayoutParams(0, -2, 1f);
         collectionsTitleParams.leftMargin = dp(12);
@@ -417,7 +459,7 @@ public final class DownloadToolsActivity extends Activity {
         LinearLayout restoreCard = card();
         LinearLayout restoreHeading = row(this);
         restoreHeading.setGravity(Gravity.CENTER_VERTICAL);
-        restoreHeading.addView(iconBadge("↶", GREEN, Color.BLACK, 42), new LinearLayout.LayoutParams(dp(42), dp(42)));
+        restoreHeading.addView(iconBadge("↶", immersiveLook ? SURFACE_ALT : ACCENT, immersiveLook ? ACCENT : Color.BLACK, 42), new LinearLayout.LayoutParams(dp(42), dp(42)));
         LinearLayout restoreTitleBlock = column();
         LinearLayout.LayoutParams restoreTitleParams = new LinearLayout.LayoutParams(0, -2, 1f);
         restoreTitleParams.leftMargin = dp(12);
@@ -431,7 +473,7 @@ public final class DownloadToolsActivity extends Activity {
         addSpace(restoreCard, 13);
         LinearLayout restoreButton = actionButton("Restore exported songs to Downloads", true, "↶");
         restoreButton.setOnClickListener(v -> prepareRestoreFromSavedFolder());
-        restoreCard.addView(restoreButton, new LinearLayout.LayoutParams(-1, dp(48)));
+        restoreCard.addView(restoreButton, new LinearLayout.LayoutParams(-1, dp(immersiveLook ? 50 : 48)));
         addSpace(restoreCard, 9);
         restoreStatus = label("Reconnect your export folder after reinstall, then restore your songs here.", 11, SUBTLE, Typeface.NORMAL);
         restoreStatus.setLineSpacing(dp(3), 1f);
@@ -442,7 +484,7 @@ public final class DownloadToolsActivity extends Activity {
         LinearLayout storageCard = card();
         LinearLayout storageHeading = row(this);
         storageHeading.setGravity(Gravity.CENTER_VERTICAL);
-        storageHeading.addView(iconBadge("▣", SURFACE_ALT, GREEN, 42), new LinearLayout.LayoutParams(dp(42), dp(42)));
+        storageHeading.addView(iconBadge("▣", SURFACE_ALT, ACCENT, 42), new LinearLayout.LayoutParams(dp(42), dp(42)));
         LinearLayout storageTitleBlock = column();
         LinearLayout.LayoutParams storageTitleParams = new LinearLayout.LayoutParams(0, -2, 1f);
         storageTitleParams.leftMargin = dp(12);
@@ -455,7 +497,7 @@ public final class DownloadToolsActivity extends Activity {
         addSpace(storageCard, 16);
         LinearLayout moveButton = actionButton("Change download location", false, "→");
         moveButton.setOnClickListener(v -> chooseStorageLocation());
-        storageCard.addView(moveButton, new LinearLayout.LayoutParams(-1, dp(48)));
+        storageCard.addView(moveButton, new LinearLayout.LayoutParams(-1, dp(immersiveLook ? 50 : 48)));
         addSpace(storageCard, 9);
         TextView moveNote = label("Existing downloads are moved, not downloaded again. Keep downloads idle while moving.", 11, SUBTLE, Typeface.NORMAL);
         moveNote.setGravity(Gravity.CENTER);
@@ -474,9 +516,10 @@ public final class DownloadToolsActivity extends Activity {
 
     private LinearLayout card() {
         LinearLayout card = column();
-        card.setPadding(dp(17), dp(17), dp(17), dp(17));
-        GradientDrawable background = roundRect(SURFACE, 17);
-        background.setStroke(dp(1), 0xFF303030);
+        int inset = immersiveLook ? 16 : 17;
+        card.setPadding(dp(inset), dp(inset), dp(inset), dp(inset));
+        GradientDrawable background = roundRect(SURFACE, immersiveLook ? 14 : 17);
+        if (!immersiveLook) background.setStroke(dp(1), 0xFF303030);
         card.setBackground(background);
         return card;
     }
@@ -494,7 +537,10 @@ public final class DownloadToolsActivity extends Activity {
     }
 
     private TextView label(String value, float size, int color, int style) {
-        return label(value, size, color, Typeface.create("sans-serif", style));
+        Typeface face = immersiveLook && immersiveTypeface != null
+                ? Typeface.create(immersiveTypeface, style)
+                : Typeface.create("sans-serif", style);
+        return label(value, size, color, face);
     }
 
     private TextView label(String value, float size, int color, Typeface typeface) {
@@ -502,7 +548,10 @@ public final class DownloadToolsActivity extends Activity {
         text.setText(value);
         text.setTextColor(color);
         text.setTextSize(size);
-        text.setTypeface(typeface);
+        Typeface face = immersiveLook && immersiveTypeface != null
+                ? Typeface.create(immersiveTypeface, typeface == null ? Typeface.NORMAL : typeface.getStyle())
+                : typeface;
+        text.setTypeface(face);
         text.setIncludeFontPadding(false);
         return text;
     }
@@ -510,16 +559,19 @@ public final class DownloadToolsActivity extends Activity {
     private TextView iconBadge(String glyph, int background, int foreground, int sizeDp) {
         TextView icon = label(glyph, 23, foreground, Typeface.BOLD);
         icon.setGravity(Gravity.CENTER);
-        icon.setBackground(roundRect(background, 50));
+        icon.setBackground(roundRect(background, immersiveLook ? 14 : 50));
         return icon;
     }
 
     private TextView chip(String value) {
-        TextView chip = label(value, 9, value.equals("COVER ART + TAGS") ? GREEN : TEXT, Typeface.BOLD);
+        TextView chip = label(value, 9, value.equals("COVER ART + TAGS") ? ACCENT : TEXT, Typeface.BOLD);
         chip.setLetterSpacing(0.04f);
         chip.setGravity(Gravity.CENTER);
         chip.setPadding(dp(9), dp(7), dp(9), dp(7));
-        chip.setBackground(roundRect(value.equals("COVER ART + TAGS") ? 0xFF173522 : SURFACE_ALT, 30));
+        int chipFill = value.equals("COVER ART + TAGS")
+                ? (immersiveLook ? MySpotiImmersiveStyle.tintedSurface(this, 44) : 0xFF173522)
+                : SURFACE_ALT;
+        chip.setBackground(roundRect(chipFill, 30));
         return chip;
     }
 
@@ -528,14 +580,15 @@ public final class DownloadToolsActivity extends Activity {
         button.setOrientation(LinearLayout.HORIZONTAL);
         button.setGravity(Gravity.CENTER);
         button.setPadding(dp(16), 0, dp(16), 0);
-        button.setBackground(ripple(roundRect(primary ? GREEN : SURFACE_ALT, 40), primary ? 0x22000000 : 0x33FFFFFF));
+        button.setBackground(ripple(roundRect(primary ? ACCENT : SURFACE_ALT, immersiveLook ? 14 : 40), primary ? 0x22FFFFFF : 0x33FFFFFF));
         button.setClickable(true);
         button.setFocusable(true);
         button.setContentDescription(title);
-        TextView caption = label(title, 14, primary ? Color.BLACK : TEXT, Typeface.BOLD);
+        int primaryContent = immersiveLook ? Color.WHITE : Color.BLACK;
+        TextView caption = label(title, 14, primary ? primaryContent : TEXT, Typeface.BOLD);
         button.addView(caption);
         if (trailing != null && !trailing.isEmpty()) {
-            TextView arrow = label(trailing, 19, primary ? Color.BLACK : GREEN, Typeface.BOLD);
+            TextView arrow = label(trailing, 19, primary ? primaryContent : ACCENT, Typeface.BOLD);
             LinearLayout.LayoutParams arrowParams = new LinearLayout.LayoutParams(-2, -2);
             arrowParams.leftMargin = dp(10);
             button.addView(arrow, arrowParams);
@@ -852,7 +905,7 @@ public final class DownloadToolsActivity extends Activity {
         dialog.setCancelable(true);
         dialog.setCanceledOnTouchOutside(true);
         dialog.show();
-        styleSpotifyDialog(dialog, 460);
+        styleMySpotiDialog(dialog, 460);
     }
 
     private void runNativeRestore(Uri tree) {
@@ -1468,8 +1521,9 @@ public final class DownloadToolsActivity extends Activity {
             final boolean isCurrent = option.id.equals(selectedId);
             LinearLayout item = column();
             item.setPadding(dp(14), dp(13), dp(14), dp(13));
-            GradientDrawable itemBackground = roundRect(isCurrent ? Color.rgb(26, 51, 36) : SURFACE_ALT, 13);
-            itemBackground.setStroke(dp(1), isCurrent ? GREEN : DIVIDER);
+            int selectedFill = immersiveLook ? MySpotiImmersiveStyle.tintedSurface(this, 48) : Color.rgb(26, 51, 36);
+            GradientDrawable itemBackground = roundRect(isCurrent ? selectedFill : SURFACE_ALT, immersiveLook ? 14 : 13);
+            itemBackground.setStroke(dp(1), isCurrent ? ACCENT : DIVIDER);
             item.setBackground(ripple(itemBackground, 0x22FFFFFF));
             item.setClickable(true);
             item.setFocusable(true);
@@ -1479,7 +1533,7 @@ public final class DownloadToolsActivity extends Activity {
             TextView optionName = label(option.label, 14, TEXT, Typeface.BOLD);
             titleRow.addView(optionName, new LinearLayout.LayoutParams(0, -2, 1f));
             if (isCurrent) {
-                TextView current = label("CURRENT", 9, GREEN, Typeface.BOLD);
+                TextView current = label("CURRENT", 9, ACCENT, Typeface.BOLD);
                 current.setLetterSpacing(0.09f);
                 current.setPadding(dp(8), dp(5), dp(8), dp(5));
                 current.setBackground(roundRect(Color.rgb(18, 66, 38), 30));
@@ -1524,7 +1578,7 @@ public final class DownloadToolsActivity extends Activity {
         dialog.setCancelable(true);
         dialog.setCanceledOnTouchOutside(true);
         dialog.show();
-        styleSpotifyDialog(dialog, 440);
+        styleMySpotiDialog(dialog, 440);
     }
 
     private void confirmMove(DownloadPatch.StorageOption option) {
@@ -1542,7 +1596,7 @@ public final class DownloadToolsActivity extends Activity {
         LinearLayout destination = column();
         destination.setPadding(dp(13), dp(11), dp(13), dp(11));
         destination.setBackground(roundRect(SURFACE_ALT, 12));
-        destination.addView(label("NEW DOWNLOAD LOCATION", 9, GREEN, Typeface.BOLD));
+        destination.addView(label("NEW DOWNLOAD LOCATION", 9, ACCENT, Typeface.BOLD));
         addSpace(destination, 5);
         destination.addView(label(option.label, 14, TEXT, Typeface.BOLD));
         addSpace(destination, 3);
@@ -1573,7 +1627,7 @@ public final class DownloadToolsActivity extends Activity {
         dialog.setCancelable(true);
         dialog.setCanceledOnTouchOutside(true);
         dialog.show();
-        styleSpotifyDialog(dialog, 440);
+        styleMySpotiDialog(dialog, 440);
     }
 
     private LinearLayout dialogPanel() {
@@ -1585,7 +1639,7 @@ public final class DownloadToolsActivity extends Activity {
         return panel;
     }
 
-    private void styleSpotifyDialog(Dialog dialog, int maxWidthDp) {
+    private void styleMySpotiDialog(Dialog dialog, int maxWidthDp) {
         Window window = dialog.getWindow();
         if (window == null) return;
         window.setBackgroundDrawable(new ColorDrawable(Color.TRANSPARENT));
@@ -1636,7 +1690,7 @@ public final class DownloadToolsActivity extends Activity {
             progressBar.setMax(Math.max(1, max));
             progressBar.setProgress(0);
         }
-        progressBar.setProgressTintList(ColorStateList.valueOf(GREEN));
+        progressBar.setProgressTintList(ColorStateList.valueOf(ACCENT));
         progressBar.setProgressBackgroundTintList(ColorStateList.valueOf(DIVIDER));
         panel.addView(progressBar, new LinearLayout.LayoutParams(-1, dp(5)));
         if (allowSyncControls) {
@@ -1727,8 +1781,12 @@ public final class DownloadToolsActivity extends Activity {
     }
 
     @Override protected void onDestroy() {
+        activityResumed = false;
         syncStatusHandler.removeCallbacks(syncStatusPoller);
         dismissProgress();
+        // The floating entry belongs to the current Settings > Downloads visit. Clear it
+        // when this tools page is explicitly closed; re-entering Downloads installs it again.
+        if (isFinishing()) DownloadPatch.onToolsActivityClosed();
         super.onDestroy();
         worker.shutdown();
     }

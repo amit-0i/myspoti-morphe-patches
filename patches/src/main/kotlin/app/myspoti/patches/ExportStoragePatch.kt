@@ -70,6 +70,8 @@ private val applicationCollectionsRead = Fingerprint(
     ),
 )
 
+// LocalPlayPlan.localIds in the 2.3.0 stable APK. Its callback interface is R8-renamed
+// to Ldo2;, but the method shape and descriptor are stable for the supported target.
 private val localPlayPlan = Fingerprint(
     definingClass = "Lur2;",
     name = "O",
@@ -181,28 +183,13 @@ private val immersiveSettingsPageRouter = Fingerprint(
     ),
 )
 
-private val immersiveDownloadsPage = Fingerprint(
-    definingClass = "Lqk3;",
-    name = "g",
-    returnType = "V",
-    parameters = listOf("Lhb5;", "Ldo2;", "Lco2;", "Lou0;", "I"),
-    filters = listOf(
-        methodCall(
-            definingClass = "Lfj5;",
-            name = "u",
-            returnType = "J",
-        ),
-        methodCall(
-            definingClass = "Landroid/text/format/Formatter;",
-            name = "formatShortFileSize",
-            returnType = "Ljava/lang/String;",
-            parameters = listOf("Landroid/content/Context;", "J"),
-        ),
-    ),
-)
-
 context(_: BytecodePatchContext)
 private fun applyMyspotiStorageHooks() {
+    // A downloaded selection always enters the local player, even while online
+    // and even when the surrounding playlist is only partly downloaded. The
+    // extension uses the host's existing isDownloaded callback and returns the
+    // downloaded subset in queue order; an undownloaded selection still follows
+    // the original Web Player / audio-source path.
     localPlayPlan.method.addInstructions(
         0,
         """
@@ -275,16 +262,14 @@ private fun applyMyspotiStorageHooks() {
     )
 
 
-    immersiveDownloadsPage.method.addInstructions(
-        0,
-        """
-            invoke-static {}, $EXT->showForCurrentActivity()V
-        """.trimIndent(),
-    )
+    // The Settings page router is AnimatedContent's content lambda. Its first
+    // argument is AnimatedContentScope and its second is the page enum. Compose
+    // emits the target page last, after the outgoing page, so the final visibility
+    // update always reflects the destination rather than a page being disposed.
     immersiveSettingsPageRouter.method.addInstructions(
         0,
         """
-            invoke-static {}, $EXT->hideSettingsAction()V
+            invoke-static/range {p2 .. p2}, $EXT->syncImmersiveSettingsAction(Ljava/lang/Object;)V
         """.trimIndent(),
     )
 
@@ -293,7 +278,7 @@ private fun applyMyspotiStorageHooks() {
 @Suppress("unused")
 val myspotiExportStorageStable = bytecodePatch(
     name = "MySpoti Export & Storage",
-    description = "Adds Export & storage to Settings > Downloads in MySpoti 2.3.0, local-first playback for downloaded tracks, tagged audio exports, offline lyrics resolution/cache, portable LRC and JSON lyrics, embedded lyrics, playlist/album M3U8 manifests, reinstall restoration into native Downloads and lyrics caches, shared track files and offline storage migration.",
+    description = "Adds Export & storage to Settings > Downloads in MySpoti 2.3.0 in both Classic and Immersive looks, matching MySpoti's Immersive glass, grouped surfaces and selected accent; includes local-first playback for downloaded tracks, tagged audio exports, offline lyrics resolution/cache, portable LRC and JSON lyrics, embedded lyrics, playlist/album M3U8 manifests, reinstall restoration into native Downloads and lyrics caches, shared track files and offline storage migration.",
     default = true,
 ) {
     compatibleWith(MYSPOTI_STABLE)

@@ -3,11 +3,13 @@ package app.myspoti.extension;
 import android.app.Activity;
 import android.app.Application;
 import android.content.Context;
+import android.content.res.ColorStateList;
 import android.content.Intent;
 import android.net.Uri;
 import android.graphics.Color;
 import android.graphics.Typeface;
 import android.graphics.drawable.GradientDrawable;
+import android.graphics.drawable.RippleDrawable;
 import android.os.Bundle;
 import android.os.Environment;
 import android.os.FileObserver;
@@ -71,6 +73,15 @@ public final class DownloadPatch {
     private static boolean activityCallbacksInstalled;
     private static final Object ACTION_TAG = new Object();
     private static final Map<Activity, View> DOWNLOAD_ACTIONS = new WeakHashMap<>();
+    private static final Map<Activity, Boolean> DOWNLOAD_ACTION_STYLES = new WeakHashMap<>();
+    private static final Handler SETTINGS_ACTION_HANDLER = new Handler(Looper.getMainLooper());
+    private static volatile boolean immersiveSettingsAction;
+    private static final Runnable REMOVE_SETTINGS_ACTION = () -> {
+        if (settingsActionRequested) return;
+        Activity activity = foregroundActivity;
+        if (activity != null) removeDownloadsAction(activity);
+        Log.i(TAG, "Settings page changed; removed Export & storage action");
+    };
 
     private static final Object AUTO_SYNC_OBSERVER_LOCK = new Object();
     private static final Object EXPORT_SYNC_LOCK = new Object();
@@ -123,17 +134,68 @@ public final class DownloadPatch {
 
     /** Called from the Classic Settings composable immediately before its Downloads tab content. */
     public static void showForCurrentActivity() {
-        settingsActionRequested = true;
-        attachForForegroundActivity(0);
+        showSettingsAction(false);
     }
 
-    /** Clears the action at the start of each Settings page/tab render; Downloads re-adds it. */
+    private static void showSettingsAction(boolean immersive) {
+        immersiveSettingsAction = immersive;
+        settingsActionRequested = true;
+        runOnMain(() -> {
+            SETTINGS_ACTION_HANDLER.removeCallbacks(REMOVE_SETTINGS_ACTION);
+            attachForForegroundActivity(0);
+        });
+    }
+
+    /**
+     * Tracks the page currently being composed by Immersive Settings AnimatedContent.
+     * Compose keeps the outgoing and incoming pages in its visible-state list, with
+     * the transition target appended last. Updating on each page therefore leaves the
+     * action in the state of the actual destination, regardless of the old page's
+     * final recomposition. This avoids depending on Compose internals or R8-renamed APIs.
+     */
+    public static void syncImmersiveSettingsAction(Object page) {
+        // Lt07 is the inspected 2.3.0 R8 descriptor for the private SettingsPage enum
+        // (Root, Playback, Downloads, DownloadQuality, Data, Display, Look, ...).
+        // The router's Function4 class is R8-merged, so ignore its unrelated call sites.
+        if (!(page instanceof Enum<?>) || !"t07".equals(page.getClass().getName())) return;
+        boolean downloads = "Downloads".equals(((Enum<?>) page).name());
+        runOnMain(() -> {
+            SETTINGS_ACTION_HANDLER.removeCallbacks(REMOVE_SETTINGS_ACTION);
+            settingsActionRequested = downloads;
+            if (downloads) {
+                immersiveSettingsAction = true;
+                attachForForegroundActivity(0);
+            } else {
+                Activity activity = foregroundActivity;
+                if (activity != null) removeDownloadsAction(activity);
+            }
+        });
+    }
+
+    /**
+     * The action is scoped to a Settings > Downloads visit. A separate Activity covers the
+     * Settings content while Export & storage is open, so the Compose page router cannot report
+     * when the tools screen itself is closed. Clear the stale overlay on that explicit exit;
+     * visiting Downloads again will attach a fresh action.
+     */
+    public static void onToolsActivityClosed() {
+        settingsActionRequested = false;
+        immersiveSettingsAction = false;
+        runOnMain(() -> {
+            SETTINGS_ACTION_HANDLER.removeCallbacks(REMOVE_SETTINGS_ACTION);
+            for (Activity activity : new ArrayList<>(DOWNLOAD_ACTIONS.keySet())) {
+                removeDownloadsAction(activity);
+            }
+        });
+    }
+
+    /** Classic Settings has its own tab content hook; keep its debounced cleanup. */
     public static void hideSettingsAction() {
         settingsActionRequested = false;
-        Activity activity = foregroundActivity;
-        if (activity == null) return;
-        runOnMain(() -> removeDownloadsAction(activity));
-        Log.i(TAG, "Settings page changed; removed Export & storage action");
+        runOnMain(() -> {
+            SETTINGS_ACTION_HANDLER.removeCallbacks(REMOVE_SETTINGS_ACTION);
+            SETTINGS_ACTION_HANDLER.postDelayed(REMOVE_SETTINGS_ACTION, 220L);
+        });
     }
 
     private static void attachForForegroundActivity(int attempt) {
@@ -224,26 +286,48 @@ public final class DownloadPatch {
         if (!settingsActionRequested || activity.isFinishing() || activity.isDestroyed()) return;
         root.setClipChildren(false);
         root.setClipToPadding(false);
+        boolean immersive = immersiveSettingsAction;
         View current = root.findViewWithTag(ACTION_TAG);
         if (current != null) {
-            DOWNLOAD_ACTIONS.put(activity, current);
-            return;
+            Boolean currentStyle = DOWNLOAD_ACTION_STYLES.get(activity);
+            if (currentStyle != null && currentStyle == immersive) {
+                DOWNLOAD_ACTIONS.put(activity, current);
+                return;
+            }
+            root.removeView(current);
+            DOWNLOAD_ACTIONS.remove(activity);
+            DOWNLOAD_ACTION_STYLES.remove(activity);
         }
 
         TextView action = new TextView(activity);
         action.setText("Export & storage");
-        action.setContentDescription("Export downloaded songs or change download location");
-        action.setTextColor(Color.BLACK);
-        action.setTextSize(13f);
-        action.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
-        int horizontal = dp(activity, 14);
-        int vertical = dp(activity, 9);
-        action.setPadding(horizontal, vertical, horizontal, vertical);
-        GradientDrawable background = new GradientDrawable();
-        background.setColor(Color.rgb(30, 215, 96));
-        background.setCornerRadius(dp(activity, 22));
-        action.setBackground(background);
-        action.setElevation(dp(activity, 8));
+        action.setContentDescription("Export & storage. Export downloaded songs or change download location.");
+        action.setGravity(Gravity.CENTER);
+        action.setTextColor(immersive ? MySpotiImmersiveStyle.accent(activity) : Color.BLACK);
+        action.setTextSize(immersive ? 13f : 13f);
+        action.setTypeface(Typeface.create("sans-serif", Typeface.BOLD));
+        if (immersive) {
+            action.setText("↗  Export");
+            action.setPadding(dp(activity, 14), 0, dp(activity, 14), 0);
+            GradientDrawable background = new GradientDrawable();
+            background.setColor(MySpotiImmersiveStyle.GLASS_FILL);
+            background.setCornerRadius(dp(activity, 22));
+            background.setStroke(dp(activity, 1), MySpotiImmersiveStyle.GLASS_EDGE);
+            action.setBackground(new RippleDrawable(ColorStateList.valueOf(0x33FFFFFF), background, null));
+            action.setElevation(dp(activity, 3));
+            action.setStateListAnimator(null);
+            action.setMinHeight(dp(activity, 44));
+            action.setMinWidth(dp(activity, 96));
+        } else {
+            int horizontal = dp(activity, 14);
+            int vertical = dp(activity, 9);
+            action.setPadding(horizontal, vertical, horizontal, vertical);
+            GradientDrawable background = new GradientDrawable();
+            background.setColor(MySpotiImmersiveStyle.accent(activity, false));
+            background.setCornerRadius(dp(activity, 22));
+            action.setBackground(background);
+            action.setElevation(dp(activity, 8));
+        }
         action.setClickable(true);
         action.setFocusable(true);
         action.setTag(ACTION_TAG);
@@ -261,16 +345,18 @@ public final class DownloadPatch {
                 FrameLayout.LayoutParams.WRAP_CONTENT,
                 FrameLayout.LayoutParams.WRAP_CONTENT,
                 Gravity.TOP | Gravity.END);
-        params.topMargin = statusBarHeight(activity) + dp(activity, 8);
-        params.rightMargin = dp(activity, 16);
+        params.topMargin = statusBarHeight(activity) + dp(activity, immersive ? 4 : 8);
+        params.rightMargin = dp(activity, immersive ? 20 : 16);
         root.addView(action, params);
         DOWNLOAD_ACTIONS.put(activity, action);
-        Log.i(TAG, "Export & storage action attached to the Settings Downloads page root");
+        DOWNLOAD_ACTION_STYLES.put(activity, immersive);
+        Log.i(TAG, "Export & storage action attached to the Settings Downloads page root (" + (immersive ? "Immersive" : "Classic") + ")");
     }
 
     private static void removeDownloadsAction(Activity activity) {
         if (activity == null) return;
         View action = DOWNLOAD_ACTIONS.remove(activity);
+        DOWNLOAD_ACTION_STYLES.remove(activity);
         View content = activity.findViewById(android.R.id.content);
         if (action == null && content instanceof FrameLayout) action = ((FrameLayout) content).findViewWithTag(ACTION_TAG);
         if (action == null && activity.getWindow() != null) {

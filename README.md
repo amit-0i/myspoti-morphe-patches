@@ -4,12 +4,15 @@ Community-maintained patches for the MySpoti Android app, built with the [Morphe
 
 ## Add this repository to Morphe
 
-[**Add MySpoti patches to Morphe**](https://morphe.software/add-source?github=amit-0i/myspoti-morphe-patches)
+[**➕ Add MySpoti patches to Morphe**](https://morphe.software/add-source?github=amit-0i/myspoti-morphe-patches)
+
+You can also add the repository manually in Morphe using:
+`https://github.com/amit-0i/myspoti-morphe-patches`
 
 ## Available patches
 
 <!-- PATCHES_START EXPANDED -->
-> **[v1.3.0](https://github.com/amit-0i/myspoti-morphe-patches/releases/tag/v1.3.0)**&nbsp;&nbsp;•&nbsp;&nbsp;`main`&nbsp;&nbsp;•&nbsp;&nbsp;3 patches total
+> **[v1.2.0](https://github.com/amit-0i/myspoti-morphe-patches/releases/tag/v1.2.0)**&nbsp;&nbsp;•&nbsp;&nbsp;`main`&nbsp;&nbsp;•&nbsp;&nbsp;3 patches total
 <details open>
 <summary>📦 MySpoti&nbsp;&nbsp;•&nbsp;&nbsp;2 patches</summary>
 <br>
@@ -21,7 +24,7 @@ Community-maintained patches for the MySpoti Android app, built with the [Morphe
 
 | 💊&nbsp;Patch | 📜&nbsp;Description | ⚙️&nbsp;Options |
 |----------|----------------|-----------|
-| [MySpoti Export & Storage](#myspoti-export-storage) | Adds Export & storage to Settings > Downloads in MySpoti 2.3.0, local-first playback for downloaded tracks, tagged audio exports, offline lyrics resolution/cache, portable LRC and JSON lyrics, embedded lyrics, playlist/album M3U8 manifests, reinstall restoration into native Downloads and lyrics caches, shared track files and offline storage migration. |  |
+| [MySpoti Export & Storage](#myspoti-export-storage) | Adds Export & storage to Settings > Downloads in Classic and Immersive looks, with MySpoti-native Immersive styling, tagged audio exports, offline lyrics, playlist/album manifests, reinstall restoration and storage migration. |  |
 | [Spotify branding](#spotify-branding) | Renames MySpoti to Spotify and replaces every launcher, themed, supporter-preview, splash, widget, and notification mark with Spotify branding. |  |
 
 </details>
@@ -49,7 +52,7 @@ Supported package variants:
 
 ## MySpoti Export & Storage
 
-The export/storage bytecode and resource patch adds **Settings → Downloads → Export & storage** to MySpoti APK. It also makes downloaded-track selection local-first, and depends on the bundled Android extension.
+The export/storage bytecode and resource patch adds **Settings → Downloads → Export & storage** to MySpoti APK in both Classic and Immersive looks. It also makes downloaded-track selection local-first, and depends on the bundled Android extension.
 
 Features:
 
@@ -63,7 +66,7 @@ Features:
 - **Playlist and album export:** Write M3U8 manifests for downloaded collections while storing one physical audio file per track.
 - **Native Downloads restore:** After reinstall, reconnect the same export folder and restore previously exported songs into MySpoti's native Downloads library using the new installation's encryption key.
 - **Storage migration:** Move the app's offline store between Android-supported app-managed internal/external storage locations.
-- **Spotify-inspired UI:** Provide a dark manager screen, readable folder selection, and progress/confirmation dialogs.
+- **Look-aware UI:** In Classic, keep the existing dark tools screen and green action. In Immersive, show an iOS-style glass action in the Downloads top bar and use MySpoti's own black canvas, raised grouped surfaces, fine separators, white/secondary typography, and the selected Immersive accent (default pink) throughout the export, restore, and storage screens.
 
 ### Backup and reinstall notes
 
