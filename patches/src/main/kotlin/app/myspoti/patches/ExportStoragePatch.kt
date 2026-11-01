@@ -70,6 +70,20 @@ private val applicationCollectionsRead = Fingerprint(
     ),
 )
 
+private val localPlayPlan = Fingerprint(
+    definingClass = "Lur2;",
+    name = "O",
+    returnType = "Ljava/util/ArrayList;",
+    parameters = listOf(
+        "Ljava/util/ArrayList;",
+        "Ljava/lang/String;",
+        "Z",
+        "Z",
+        "Z",
+        "Ldo2;",
+    ),
+)
+
 private val offlineStoreLoad = Fingerprint(
     definingClass = "Lfj5;",
     name = "n",
@@ -189,6 +203,15 @@ private val immersiveDownloadsPage = Fingerprint(
 
 context(_: BytecodePatchContext)
 private fun applyMyspotiStorageHooks() {
+    localPlayPlan.method.addInstructions(
+        0,
+        """
+            invoke-static/range {p0 .. p5}, Lapp/myspoti/extension/LocalPlaybackPolicy;->localIds(Ljava/util/ArrayList;Ljava/lang/String;ZZZLjava/lang/Object;)Ljava/util/ArrayList;
+            move-result-object v0
+            return-object v0
+        """.trimIndent(),
+    )
+
     // OfflineStore.load(File) is staticized by R8. Its single File parameter is p0.
     // Replace that parameter before the original loader stores the root and scans indexes.
     offlineStoreLoad.method.addInstructions(
@@ -270,7 +293,7 @@ private fun applyMyspotiStorageHooks() {
 @Suppress("unused")
 val myspotiExportStorageStable = bytecodePatch(
     name = "MySpoti Export & Storage",
-    description = "Adds Export & storage to Settings > Downloads in MySpoti 2.3.0, with tagged audio exports, offline lyrics resolution/cache, portable LRC and JSON lyrics, embedded lyrics, playlist/album M3U8 manifests, reinstall restoration into native Downloads and lyrics caches, shared track files and offline storage migration.",
+    description = "Adds Export & storage to Settings > Downloads in MySpoti 2.3.0, local-first playback for downloaded tracks, tagged audio exports, offline lyrics resolution/cache, portable LRC and JSON lyrics, embedded lyrics, playlist/album M3U8 manifests, reinstall restoration into native Downloads and lyrics caches, shared track files and offline storage migration.",
     default = true,
 ) {
     compatibleWith(MYSPOTI_STABLE)

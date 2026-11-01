@@ -1,6 +1,6 @@
 # MySpoti patches for Morphe
 
-Community-maintained patches for the MySpoti Android app, built with the [Morphe patching framework](https://github.com/MorpheApp). This repository combines the original Spotify branding resource patch with an export, storage, playlist/album, lyrics, and reinstall-restore patch for MySpoti stable 2.2.0.
+Community-maintained patches for the MySpoti Android app, built with the [Morphe patching framework](https://github.com/MorpheApp). This repository combines the Spotify branding resource patch with export, storage, local-first playback, playlist/album, lyrics, and reinstall-restore patches for MySpoti stable 2.3.0.
 
 ## Available patches
 
@@ -45,9 +45,11 @@ Supported package variants:
 
 ## MySpoti Export & Storage
 
-The export/storage bytecode and resource patch adds **Settings → Downloads → Export & storage** to MySpoti APK. It depends on the bundled Android extension.
+The export/storage bytecode and resource patch adds **Settings → Downloads → Export & storage** to MySpoti APK. It also makes downloaded-track selection local-first, and depends on the bundled Android extension.
 
 Features:
+
+- **Local-first playback:** Selecting a track that is already downloaded plays from the encrypted file on device, even while online and even when the rest of its playlist is not downloaded. The local queue contains the downloaded songs from that list in its existing order; selecting a song without a local copy keeps the normal online/audio-source path.
 
 - **Offline audio export:** Decrypt MySpoti's offline audio and export playable MP3, FLAC, or M4A without re-encoding.
 - **Metadata and artwork:** Preserve title, artist, album, duration, and embedded cover art.
