@@ -1,3 +1,9 @@
+## [1.3.1](https://github.com/amit-0i/myspoti-morphe-patches/compare/v1.3.0...v1.3.1) (2026-11-01)
+
+### 🐛 Bug Fixes
+
+* **ui:** show export page option in immersive look & sync theme color in classic look ([27d681e](https://github.com/amit-0i/myspoti-morphe-patches/commit/27d681e8e1e1292055003fc0ea6c6bfbe2e5aeca))
+
 ## [1.3.0](https://github.com/amit-0i/myspoti-morphe-patches/compare/v1.2.0...v1.3.0) (2026-11-01)
 
 ### ✨ New Features
