@@ -30,6 +30,13 @@ final class ExportSyncRunner {
 
     static void sync(Context context, Uri tree, boolean deleteRemoved) throws Exception {
         Context app = context.getApplicationContext();
+        if (!ExportSyncCoordinator.tryStart("Auto-sync", false, "Preparing automatic export…")) {
+            DownloadPatch.deferAutoSync(app);
+            Log.i(TAG, "Skipped an automatic export pass because another sync is already active; one retry was queued");
+            return;
+        }
+        boolean completed = false;
+        try {
         synchronized (DownloadPatch.exportSyncLock()) {
             List<?> tracks = DownloadPatch.downloadedTracks(app);
             List<DownloadPatch.CollectionSnapshot> collections = null;
@@ -70,6 +77,8 @@ final class ExportSyncRunner {
             int lyricsFailed = 0;
             String lastError = null;
             final long lyricsRetryIntervalMs = 12L * 60L * 60L * 1000L;
+            int done = 0;
+            ExportSyncCoordinator.update("Exporting downloaded songs…", 0, tracks.size());
             for (Object track : tracks) {
                 Uri destination = null;
                 boolean created = false;
@@ -177,8 +186,12 @@ final class ExportSyncRunner {
                     lastError = error.getMessage() == null ? error.getClass().getSimpleName() : error.getMessage();
                     Log.w(TAG, "Background export failed for " + DownloadPatch.trackTitle(track), error);
                 }
+                done++;
+                ExportSyncCoordinator.update("Exported " + exported + " new · " + skipped
+                        + " present · " + failed + " failed", done, tracks.size());
             }
 
+            ExportSyncCoordinator.update("Updating playlist & album lists…", tracks.size(), tracks.size());
             int deletedTracks = 0;
             int deletedCollections = 0;
             boolean deletionSyncSafe = deleteRemoved && DownloadPatch.canMirrorDeletedDownloads(
@@ -213,6 +226,12 @@ final class ExportSyncRunner {
                     + ", manifests=" + manifestCount + ", collectionFailures=" + collectionFailures
                     + ", deletedExports=" + deletedTracks + ", deletedManifests=" + deletedCollections
                     + (lastError == null ? "" : ", lastError=" + lastError));
+        }
+        completed = true;
+        } finally {
+            ExportSyncCoordinator.finish(completed
+                    ? "Automatic background sync complete. The export archive is up to date."
+                    : "Automatic background sync did not complete. Check the sync log for details.");
         }
     }
 

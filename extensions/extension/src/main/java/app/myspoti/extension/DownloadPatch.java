@@ -482,6 +482,12 @@ public final class DownloadPatch {
 
     private static void startAutoSync(Context context) {
         Context app = context.getApplicationContext();
+        // Changes observed during a manual/page-started sync are remembered and
+        // coalesced into one follow-up pass after that sync releases the coordinator.
+        if (ExportSyncCoordinator.isRunning()) {
+            deferAutoSync(app);
+            return;
+        }
         android.content.SharedPreferences preferences = app.getSharedPreferences(ExportIndex.PREFS, Context.MODE_PRIVATE);
         if (!preferences.getBoolean(ExportIndex.PREF_AUTO_SYNC, false)) return;
         String value = preferences.getString(ExportIndex.PREF_EXPORT_TREE_URI, null);
@@ -514,6 +520,28 @@ public final class DownloadPatch {
                 if (runAgain) scheduleAutoSync(app);
             }
         });
+    }
+
+    /** Marks an observer event for a single coalesced retry after the current sync. */
+    static void deferAutoSync(Context context) {
+        if (context == null) return;
+        Context app = context.getApplicationContext();
+        synchronized (AUTO_SYNC_OBSERVER_LOCK) { autoSyncAgain = true; }
+        // Close the small race where the current sync finishes just before this
+        // observer request is recorded.
+        if (!ExportSyncCoordinator.isRunning()) onExternalExportSyncFinished(app);
+    }
+
+    /** Called by the Activity after its sync completes, so deferred observer changes are not lost. */
+    static void onExternalExportSyncFinished(Context context) {
+        if (context == null) return;
+        Context app = context.getApplicationContext();
+        boolean runAgain;
+        synchronized (AUTO_SYNC_OBSERVER_LOCK) {
+            runAgain = autoSyncAgain && !autoSyncRunning;
+            if (runAgain) autoSyncAgain = false;
+        }
+        if (runAgain) scheduleAutoSync(app);
     }
 
     public static String selectedStorageId(Context context) {

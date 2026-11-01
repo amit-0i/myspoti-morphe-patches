@@ -14,6 +14,8 @@ import android.graphics.drawable.RippleDrawable;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
+import android.os.Handler;
+import android.os.Looper;
 import android.provider.DocumentsContract;
 import android.view.Gravity;
 import android.view.View;
@@ -68,9 +70,16 @@ public final class DownloadToolsActivity extends Activity {
     private Dialog progressDialog;
     private ProgressBar progressBar;
     private TextView progressMessage;
-    private volatile boolean syncRunning;
-    private volatile boolean syncStopRequested;
-    private volatile boolean syncBackgrounded;
+    private LinearLayout backgroundStopButton;
+    private boolean activityResumed;
+    private boolean observedActiveSync;
+    private final Handler syncStatusHandler = new Handler(Looper.getMainLooper());
+    private final Runnable syncStatusPoller = new Runnable() {
+        @Override public void run() {
+            renderSyncCoordinatorStatus();
+            if (activityResumed) syncStatusHandler.postDelayed(this, 750L);
+        }
+    };
 
     @Override protected void onCreate(Bundle state) {
         super.onCreate(state);
@@ -78,6 +87,36 @@ public final class DownloadToolsActivity extends Activity {
         buildUi();
         refreshSummary();
         autoSyncSavedFolder();
+    }
+
+    @Override protected void onResume() {
+        super.onResume();
+        activityResumed = true;
+        syncStatusHandler.removeCallbacks(syncStatusPoller);
+        syncStatusHandler.post(syncStatusPoller);
+    }
+
+    @Override protected void onPause() {
+        activityResumed = false;
+        syncStatusHandler.removeCallbacks(syncStatusPoller);
+        super.onPause();
+    }
+
+    private void renderSyncCoordinatorStatus() {
+        ExportSyncCoordinator.Snapshot snapshot = ExportSyncCoordinator.snapshot();
+        if (snapshot.running) {
+            observedActiveSync = true;
+            if (exportSyncStatus != null) exportSyncStatus.setText(snapshot.displayText());
+            if (backgroundStopButton != null) {
+                backgroundStopButton.setVisibility(snapshot.canStop ? View.VISIBLE : View.GONE);
+                backgroundStopButton.setEnabled(!snapshot.stopRequested);
+            }
+        } else {
+            if (observedActiveSync && snapshot.lastResult != null && !snapshot.lastResult.trim().isEmpty()
+                    && exportSyncStatus != null) exportSyncStatus.setText(snapshot.lastResult);
+            observedActiveSync = false;
+            if (backgroundStopButton != null) backgroundStopButton.setVisibility(View.GONE);
+        }
     }
 
     private void configureWindow() {
@@ -324,6 +363,16 @@ public final class DownloadToolsActivity extends Activity {
         exportSyncStatus = label("Auto-sync is off by default. Choose an export folder, then enable it to sync each completed download and playlist/album change.", 11, MUTED, Typeface.NORMAL);
         exportSyncStatus.setLineSpacing(dp(3), 1f);
         exportCard.addView(exportSyncStatus);
+        backgroundStopButton = actionButton("Stop active sync", true, "■");
+        backgroundStopButton.setOnClickListener(v -> {
+            if (ExportSyncCoordinator.requestStop()) {
+                renderSyncCoordinatorStatus();
+                Toast.makeText(this, "Sync will stop after the current song finishes.", Toast.LENGTH_SHORT).show();
+            }
+        });
+        backgroundStopButton.setVisibility(View.GONE);
+        addSpace(exportCard, 8);
+        exportCard.addView(backgroundStopButton, new LinearLayout.LayoutParams(-1, dp(42)));
         addSpace(exportCard, 5);
         exportArchiveStatus = label("The export index will be stored inside your chosen folder.", 11, SUBTLE, Typeface.NORMAL);
         exportArchiveStatus.setLineSpacing(dp(3), 1f);
@@ -590,6 +639,12 @@ public final class DownloadToolsActivity extends Activity {
     }
 
     private void autoSyncSavedFolder() {
+        // Reopening this screen must attach to an existing sync, not start another
+        // export pass that waits behind the first pass's SAF lock.
+        if (ExportSyncCoordinator.isRunning()) {
+            renderSyncCoordinatorStatus();
+            return;
+        }
         boolean enabled = getSharedPreferences(ExportIndex.PREFS, MODE_PRIVATE)
                 .getBoolean(ExportIndex.PREF_AUTO_SYNC, false);
         if (!enabled) {
@@ -816,22 +871,24 @@ public final class DownloadToolsActivity extends Activity {
 
     /** Idempotent export/sync: track IDs are exported once, then collection M3U8 manifests are refreshed. */
     private void syncExports(Uri tree, boolean automatic) {
-        if (!automatic && syncRunning) {
-            Toast.makeText(this, "A sync is already running.", Toast.LENGTH_SHORT).show();
+        String mode = automatic ? "Auto-sync" : "Manual sync";
+        String initialStatus = automatic ? "Checking your export folder…" : "Preparing downloaded songs…";
+        if (!ExportSyncCoordinator.tryStart(mode, !automatic, initialStatus)) {
+            renderSyncCoordinatorStatus();
+            if (!automatic) Toast.makeText(this, "A sync is already running. Its status is shown on this page.", Toast.LENGTH_SHORT).show();
             return;
         }
-        if (!automatic) {
-            syncRunning = true;
-            syncStopRequested = false;
-            syncBackgrounded = false;
-        }
+        renderSyncCoordinatorStatus();
         final List<?> tracks;
         final List<DownloadPatch.CollectionSnapshot> collections;
         try {
             tracks = downloadedTracks();
         } catch (Throwable t) {
-            if (!automatic) syncRunning = false;
-            Toast.makeText(this, "Could not read downloads: " + t.getMessage(), Toast.LENGTH_LONG).show();
+            String error = safeMessage(t);
+            ExportSyncCoordinator.finish("Could not start sync: " + error);
+            renderSyncCoordinatorStatus();
+            DownloadPatch.onExternalExportSyncFinished(getApplicationContext());
+            Toast.makeText(this, "Could not read downloads: " + error, Toast.LENGTH_LONG).show();
             return;
         }
         String collectionReadError = null;
@@ -862,9 +919,11 @@ public final class DownloadToolsActivity extends Activity {
         catch (Throwable error) { Log.w("MyspotiStoragePatch", "Could not snapshot individual downloads", error); }
         final java.util.Set<String> activeSingleIds = singleSnapshot;
 
+        ExportSyncCoordinator.update("Comparing downloaded songs with the export index…", 0, tracks.size());
         showProgress(automatic ? "Checking export folder" : "Syncing downloads",
                 tracks.isEmpty() ? "Reading your saved export list…" : "Comparing downloaded songs with the export index…",
                 true, Math.max(1, tracks.size()), !automatic);
+        try {
         worker.execute(() -> {
             synchronized (DownloadPatch.exportSyncLock()) {
             int exported = 0;
@@ -897,7 +956,7 @@ public final class DownloadToolsActivity extends Activity {
                 archiveSummary = index.summary();
                 int done = 0;
                 for (Object track : tracks) {
-                    if (!automatic && syncStopRequested) {
+                    if (!automatic && ExportSyncCoordinator.isStopRequested()) {
                         cancelled = true;
                         break;
                     }
@@ -1008,16 +1067,17 @@ public final class DownloadToolsActivity extends Activity {
                     final int skippedValue = skipped;
                     final int failedValue = failed;
                     final int lyricsValue = lyricsSavedCount;
-                    runOnUiThread(() -> updateProgress(progressValue,
-                            "Exported " + exportedValue + " new · " + skippedValue + " present · "
-                                    + lyricsValue + " with lyrics · " + failedValue + " failed"));
-                    if (!automatic && syncStopRequested) {
+                    String progressText = "Exported " + exportedValue + " new · " + skippedValue + " present · "
+                            + lyricsValue + " with lyrics · " + failedValue + " failed";
+                    ExportSyncCoordinator.update(progressText, progressValue, tracks.size());
+                    runOnUiThread(() -> updateProgress(progressValue, progressText));
+                    if (!automatic && ExportSyncCoordinator.isStopRequested()) {
                         cancelled = true;
                         break;
                     }
                 }
 
-                if (!automatic && syncStopRequested) cancelled = true;
+                if (!automatic && ExportSyncCoordinator.isStopRequested()) cancelled = true;
                 if (!cancelled) {
                     boolean deleteRemoved = getSharedPreferences(ExportIndex.PREFS, MODE_PRIVATE)
                             .getBoolean(ExportIndex.PREF_DELETE_REMOVED, false);
@@ -1036,6 +1096,7 @@ public final class DownloadToolsActivity extends Activity {
 
                     // Build collection manifests only after the shared track files have been synced
                     // and stale exports pruned. Each list reuses the same Tracks/ document IDs.
+                    ExportSyncCoordinator.update("Updating playlist & album lists…", tracks.size(), tracks.size());
                     runOnUiThread(() -> updateProgress(Math.max(1, tracks.size()), "Updating playlist & album lists…"));
                     if (collectionError == null) {
                         CollectionSyncResult collectionResult = syncCollectionManifests(index, collections, !automatic);
@@ -1044,7 +1105,7 @@ public final class DownloadToolsActivity extends Activity {
                         missingCollectionTracks = collectionResult.missingTracks;
                         collectionFailures = collectionResult.failures;
                         collectionSummary = collectionResult.summary;
-                        if (!automatic && syncStopRequested) {
+                        if (!automatic && ExportSyncCoordinator.isStopRequested()) {
                             cancelled = true;
                             collectionSummary = "Collection updates stopped. Existing manifests were kept; run Sync now again to finish.";
                         } else if (deletionSyncSafe) {
@@ -1085,9 +1146,8 @@ public final class DownloadToolsActivity extends Activity {
             final String savedSummary = archiveSummary;
             final String manifestSummary = collectionSummary;
             final String error = lastError;
-            final boolean wasCancelled = cancelled || (!automatic && syncStopRequested);
-            final boolean wasBackgrounded = !automatic && syncBackgrounded;
-            if (!automatic) syncBackgrounded = false;
+            final boolean wasCancelled = cancelled || (!automatic && ExportSyncCoordinator.isStopRequested());
+            final boolean wasBackgrounded = ExportSyncCoordinator.snapshot().backgrounded;
             final int problemCount = failureCount + lyricsFailures + collectionFailureCount;
             runOnUiThread(() -> {
                 dismissProgress();
@@ -1128,7 +1188,12 @@ public final class DownloadToolsActivity extends Activity {
                         }
                     }
                     exportSyncStatus.setText(status);
+                    ExportSyncCoordinator.finish(status);
+                    renderSyncCoordinatorStatus();
+                } else {
+                    ExportSyncCoordinator.finish(wasCancelled ? "Sync stopped. Completed exports were kept." : "Sync finished.");
                 }
+                DownloadPatch.onExternalExportSyncFinished(getApplicationContext());
                 if (exportArchiveStatus != null) exportArchiveStatus.setText(savedSummary.isEmpty()
                         ? savedCount + " song record(s) in the portable export index. The index and lyrics sidecars are stored in the selected folder, not in app data."
                         : savedSummary);
@@ -1144,10 +1209,15 @@ public final class DownloadToolsActivity extends Activity {
                     else collectionSyncStatus.setText(manifestSummary);
                 }
                 refreshSummary();
-                if (!automatic) syncRunning = false;
             });
             }
         });
+        } catch (Throwable submitError) {
+            ExportSyncCoordinator.finish("Could not start sync: " + safeMessage(submitError));
+            renderSyncCoordinatorStatus();
+            if (!automatic) Toast.makeText(this, "Could not start sync: " + safeMessage(submitError), Toast.LENGTH_LONG).show();
+            DownloadPatch.onExternalExportSyncFinished(getApplicationContext());
+        }
     }
 
     private CollectionSyncResult syncCollectionManifests(ExportIndex index,
@@ -1155,7 +1225,7 @@ public final class DownloadToolsActivity extends Activity {
         CollectionSyncResult result = new CollectionSyncResult();
         java.util.Map<String, Boolean> availableDocumentCache = new java.util.HashMap<>();
         for (DownloadPatch.CollectionSnapshot collection : collections) {
-            if (allowStop && syncStopRequested) break;
+            if (allowStop && ExportSyncCoordinator.isStopRequested()) break;
             if (collection == null || collection.uri == null || collection.uri.isEmpty()) continue;
             try {
                 boolean album = "album".equalsIgnoreCase(collection.type);
@@ -1521,21 +1591,21 @@ public final class DownloadToolsActivity extends Activity {
             actions.setGravity(Gravity.CENTER_VERTICAL);
             LinearLayout backgroundButton = actionButton("Run in background", false, "↘");
             backgroundButton.setOnClickListener(v -> {
-                syncBackgrounded = true;
+                ExportSyncCoordinator.markBackgrounded();
                 dismissProgress();
-                if (exportSyncStatus != null) exportSyncStatus.setText(
-                        "Sync is continuing in the background. Keep MySpoti open until it finishes.");
-                Toast.makeText(this, "Sync continues in the background.", Toast.LENGTH_SHORT).show();
+                renderSyncCoordinatorStatus();
+                Toast.makeText(this, "Sync continues in the background. Return to Export & Storage to check progress.", Toast.LENGTH_SHORT).show();
             });
             actions.addView(backgroundButton, new LinearLayout.LayoutParams(0, dp(44), 1f));
             View gap = new View(this);
             actions.addView(gap, new LinearLayout.LayoutParams(dp(8), 1));
             LinearLayout stopButton = actionButton("Stop sync", true, "■");
             stopButton.setOnClickListener(v -> {
-                syncStopRequested = true;
+                ExportSyncCoordinator.requestStop();
                 updateProgressMessage("Stopping after the current song finishes…");
                 stopButton.setEnabled(false);
                 stopButton.setClickable(false);
+                renderSyncCoordinatorStatus();
             });
             actions.addView(stopButton, new LinearLayout.LayoutParams(0, dp(44), 1f));
             panel.addView(actions);
@@ -1603,6 +1673,7 @@ public final class DownloadToolsActivity extends Activity {
     }
 
     @Override protected void onDestroy() {
+        syncStatusHandler.removeCallbacks(syncStatusPoller);
         dismissProgress();
         super.onDestroy();
         worker.shutdown();
