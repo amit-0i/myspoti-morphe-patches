@@ -105,7 +105,10 @@ final class ExportSyncRunner {
                     // Avoid rewriting an existing cache file: its FileObserver would otherwise
                     // schedule an endless chain of identical background syncs.
                     if (hasLyrics && LyricsStore.readNativeCache(app, trackId) == null) {
-                        LyricsStore.restoreNativeCache(app, trackId, lyricsJson);
+                        try { LyricsStore.restoreNativeCache(app, trackId, lyricsJson); }
+                        catch (Throwable cacheError) {
+                            Log.w(TAG, "Could not restore native lyrics cache for " + trackId, cacheError);
+                        }
                     }
                     String lyricsText = hasLyrics ? LyricsStore.toPlainText(lyricsJson) : "";
                     String lyricsLrc = hasLyrics ? LyricsStore.toLrc(lyricsJson, title, artist, album) : "";
@@ -296,7 +299,8 @@ final class ExportSyncRunner {
 
     private static String addTrackIdSuffix(String filename, String trackId) {
         int dot = filename.lastIndexOf('.');
-        String suffix = trackId.length() > 6 ? trackId.substring(trackId.length() - 6) : trackId;
+        // Keep the entire Spotify ID: six-character tails can collide across tracks.
+        String suffix = trackId == null ? "unknown" : trackId.replaceAll("[^A-Za-z0-9._-]", "_");
         return dot > 0 ? filename.substring(0, dot) + " [" + suffix + "]" + filename.substring(dot)
                 : filename + " [" + suffix + "]";
     }

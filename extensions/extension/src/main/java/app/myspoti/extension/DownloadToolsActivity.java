@@ -68,6 +68,9 @@ public final class DownloadToolsActivity extends Activity {
     private Dialog progressDialog;
     private ProgressBar progressBar;
     private TextView progressMessage;
+    private volatile boolean syncRunning;
+    private volatile boolean syncStopRequested;
+    private volatile boolean syncBackgrounded;
 
     @Override protected void onCreate(Bundle state) {
         super.onCreate(state);
@@ -257,7 +260,7 @@ public final class DownloadToolsActivity extends Activity {
         exportButton.setOnClickListener(v -> chooseExportFolder());
         exportCard.addView(exportButton, new LinearLayout.LayoutParams(-1, dp(50)));
         addSpace(exportCard, 10);
-        TextView metadataNote = label("Title, artist, album, artwork and lyrics are embedded where supported. Synced lyrics are also saved as .lrc sidecars. Audio is not re-encoded.", 11, SUBTLE, Typeface.NORMAL);
+        TextView metadataNote = label("Title, artist, album and artwork are embedded where supported. Lyrics are saved separately in Lyrics/LRC and Lyrics/JSON. Audio is not re-encoded.", 11, SUBTLE, Typeface.NORMAL);
         metadataNote.setGravity(Gravity.CENTER);
         exportCard.addView(metadataNote);
 
@@ -563,9 +566,17 @@ public final class DownloadToolsActivity extends Activity {
         if (requestCode != REQUEST_EXPORT_FOLDER || resultCode != RESULT_OK || data == null || data.getData() == null) return;
         Uri tree = data.getData();
         try {
-            int flags = data.getFlags() & (Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_GRANT_WRITE_URI_PERMISSION);
+            int requestedFlags = Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_GRANT_WRITE_URI_PERMISSION;
+            int flags = data.getFlags() & requestedFlags;
+            if ((flags & requestedFlags) != requestedFlags) {
+                throw new SecurityException("Android did not grant both read and write access to the selected folder.");
+            }
             getContentResolver().takePersistableUriPermission(tree, flags);
-        } catch (Throwable ignored) {}
+        } catch (Throwable permissionError) {
+            Log.w("MyspotiStoragePatch", "Could not persist access to the selected export folder", permissionError);
+            Toast.makeText(this, "Android could not keep access to that folder. Please select it again and allow access.", Toast.LENGTH_LONG).show();
+            return;
+        }
         // The URI permission is app-scoped, but the JSON ledger beside the exported music is
         // portable. After reinstall, the user reconnects this same folder to restore the ledger.
         getSharedPreferences(ExportIndex.PREFS, MODE_PRIVATE).edit()
@@ -805,11 +816,21 @@ public final class DownloadToolsActivity extends Activity {
 
     /** Idempotent export/sync: track IDs are exported once, then collection M3U8 manifests are refreshed. */
     private void syncExports(Uri tree, boolean automatic) {
+        if (!automatic && syncRunning) {
+            Toast.makeText(this, "A sync is already running.", Toast.LENGTH_SHORT).show();
+            return;
+        }
+        if (!automatic) {
+            syncRunning = true;
+            syncStopRequested = false;
+            syncBackgrounded = false;
+        }
         final List<?> tracks;
         final List<DownloadPatch.CollectionSnapshot> collections;
         try {
             tracks = downloadedTracks();
         } catch (Throwable t) {
+            if (!automatic) syncRunning = false;
             Toast.makeText(this, "Could not read downloads: " + t.getMessage(), Toast.LENGTH_LONG).show();
             return;
         }
@@ -843,7 +864,7 @@ public final class DownloadToolsActivity extends Activity {
 
         showProgress(automatic ? "Checking export folder" : "Syncing downloads",
                 tracks.isEmpty() ? "Reading your saved export list…" : "Comparing downloaded songs with the export index…",
-                true, Math.max(1, tracks.size()));
+                true, Math.max(1, tracks.size()), !automatic);
         worker.execute(() -> {
             synchronized (DownloadPatch.exportSyncLock()) {
             int exported = 0;
@@ -854,6 +875,7 @@ public final class DownloadToolsActivity extends Activity {
             int lyricsSavedCount = 0;
             int lyricsMissingCount = 0;
             int lyricsFailureCount = 0;
+            String lyricsLastError = null;
             String lastError = null;
             int archiveCount = 0;
             int savedCollectionCount = 0;
@@ -864,6 +886,7 @@ public final class DownloadToolsActivity extends Activity {
             String archiveSummary = "";
             String collectionSummary = "";
             ExportIndex index = null;
+            boolean cancelled = false;
             try {
                 index = ExportIndex.open(this, tree);
                 try {
@@ -874,6 +897,10 @@ public final class DownloadToolsActivity extends Activity {
                 archiveSummary = index.summary();
                 int done = 0;
                 for (Object track : tracks) {
+                    if (!automatic && syncStopRequested) {
+                        cancelled = true;
+                        break;
+                    }
                     Uri destination = null;
                     boolean created = false;
                     try {
@@ -892,13 +919,17 @@ public final class DownloadToolsActivity extends Activity {
                         // Reuse an existing portable lyrics copy first; otherwise ask the same resolver
                         // used by MySpoti's player. This writes the exact native offline cache format too.
                         JSONObject lyricsJson = index.readLyricsJson(trackId);
-                        if (lyricsJson == null) {
-                            lyricsJson = LyricsStore.obtain(this, trackId, title, artist, album,
-                                    DownloadPatch.trackDurationMs(track), DownloadPatch.trackCoverUrl(track), true);
-                        }
+                        if (lyricsJson == null) lyricsJson = LyricsStore.readNativeCache(this, trackId);
+                        // Lyrics are best-effort: a resolver/cache problem must never prevent
+                        // an otherwise valid audio file from being exported.
+                        if (lyricsJson == null) lyricsJson = LyricsStore.obtain(this, trackId, title, artist, album,
+                                DownloadPatch.trackDurationMs(track), DownloadPatch.trackCoverUrl(track), true);
                         boolean hasLyrics = LyricsStore.validLyricsJson(lyricsJson);
                         if (hasLyrics && LyricsStore.readNativeCache(this, trackId) == null) {
-                            LyricsStore.restoreNativeCache(this, trackId, lyricsJson);
+                            try { LyricsStore.restoreNativeCache(this, trackId, lyricsJson); }
+                            catch (Throwable cacheError) {
+                                Log.w("MyspotiStoragePatch", "Could not restore native lyrics cache for " + trackId, cacheError);
+                            }
                         }
                         String lyricsText = hasLyrics ? LyricsStore.toPlainText(lyricsJson) : "";
                         String lyricsLrc = hasLyrics ? LyricsStore.toLrc(lyricsJson, title, artist, album) : "";
@@ -959,6 +990,8 @@ public final class DownloadToolsActivity extends Activity {
                                 lyricsSavedCount++;
                             } catch (Throwable lyricError) {
                                 lyricsFailureCount++;
+                                if (lyricsLastError == null) lyricsLastError = lyricError.getMessage() == null
+                                        ? lyricError.getClass().getSimpleName() : lyricError.getMessage();
                                 Log.w("MyspotiStoragePatch", "Audio exported but lyric sidecars could not be saved for " + title, lyricError);
                             }
                         } else {
@@ -978,42 +1011,54 @@ public final class DownloadToolsActivity extends Activity {
                     runOnUiThread(() -> updateProgress(progressValue,
                             "Exported " + exportedValue + " new · " + skippedValue + " present · "
                                     + lyricsValue + " with lyrics · " + failedValue + " failed"));
-                }
-
-                boolean deleteRemoved = getSharedPreferences(ExportIndex.PREFS, MODE_PRIVATE)
-                        .getBoolean(ExportIndex.PREF_DELETE_REMOVED, false);
-                boolean deletionSyncSafe = deleteRemoved && DownloadPatch.canMirrorDeletedDownloads(
-                        this, activeTrackIds, activeCollectionKeys, activeSingleIds);
-                int deletedTracks = 0;
-                int deletedCollections = 0;
-                if (deletionSyncSafe) {
-                    // Prune stale audio before regenerating manifests, so no M3U8 points at a
-                    // file that this same sync is about to remove.
-                    deletedTracks = index.removeTracksNotIn(activeTrackIds);
-                    index.replaceSingleTrackIds(activeSingleIds);
-                } else if (deleteRemoved) {
-                    Log.w("MyspotiStoragePatch", "Skipped deletion sync because MySpoti's source indexes were not fully loaded");
-                }
-
-                // Build collection manifests only after the shared track files have been synced
-                // and stale exports pruned. Each list reuses the same Tracks/ document IDs.
-                runOnUiThread(() -> updateProgress(Math.max(1, tracks.size()), "Updating playlist & album lists…"));
-                if (collectionError == null) {
-                    CollectionSyncResult collectionResult = syncCollectionManifests(index, collections);
-                    collectionManifests = collectionResult.manifests;
-                    collectionTracks = collectionResult.referencedTracks;
-                    missingCollectionTracks = collectionResult.missingTracks;
-                    collectionFailures = collectionResult.failures;
-                    collectionSummary = collectionResult.summary;
-                    if (deletionSyncSafe) {
-                        deletedCollections = index.removeCollectionsNotIn(activeCollectionKeys);
+                    if (!automatic && syncStopRequested) {
+                        cancelled = true;
+                        break;
                     }
-                } else {
-                    collectionSummary = "Could not read MySpoti collection index: " + collectionError;
-                    collectionFailures++;
                 }
-                if (deletionSyncSafe) Log.i("MyspotiStoragePatch", "Deletion sync removed " + deletedTracks
-                        + " exported song(s) and " + deletedCollections + " obsolete collection manifest(s)");
+
+                if (!automatic && syncStopRequested) cancelled = true;
+                if (!cancelled) {
+                    boolean deleteRemoved = getSharedPreferences(ExportIndex.PREFS, MODE_PRIVATE)
+                            .getBoolean(ExportIndex.PREF_DELETE_REMOVED, false);
+                    boolean deletionSyncSafe = deleteRemoved && DownloadPatch.canMirrorDeletedDownloads(
+                            this, activeTrackIds, activeCollectionKeys, activeSingleIds);
+                    int deletedTracks = 0;
+                    int deletedCollections = 0;
+                    if (deletionSyncSafe) {
+                        // Prune stale audio before regenerating manifests, so no M3U8 points at a
+                        // file that this same sync is about to remove.
+                        deletedTracks = index.removeTracksNotIn(activeTrackIds);
+                        index.replaceSingleTrackIds(activeSingleIds);
+                    } else if (deleteRemoved) {
+                        Log.w("MyspotiStoragePatch", "Skipped deletion sync because MySpoti's source indexes were not fully loaded");
+                    }
+
+                    // Build collection manifests only after the shared track files have been synced
+                    // and stale exports pruned. Each list reuses the same Tracks/ document IDs.
+                    runOnUiThread(() -> updateProgress(Math.max(1, tracks.size()), "Updating playlist & album lists…"));
+                    if (collectionError == null) {
+                        CollectionSyncResult collectionResult = syncCollectionManifests(index, collections, !automatic);
+                        collectionManifests = collectionResult.manifests;
+                        collectionTracks = collectionResult.referencedTracks;
+                        missingCollectionTracks = collectionResult.missingTracks;
+                        collectionFailures = collectionResult.failures;
+                        collectionSummary = collectionResult.summary;
+                        if (!automatic && syncStopRequested) {
+                            cancelled = true;
+                            collectionSummary = "Collection updates stopped. Existing manifests were kept; run Sync now again to finish.";
+                        } else if (deletionSyncSafe) {
+                            deletedCollections = index.removeCollectionsNotIn(activeCollectionKeys);
+                        }
+                    } else {
+                        collectionSummary = "Could not read MySpoti collection index: " + collectionError;
+                        collectionFailures++;
+                    }
+                    if (deletionSyncSafe) Log.i("MyspotiStoragePatch", "Deletion sync removed " + deletedTracks
+                            + " exported song(s) and " + deletedCollections + " obsolete collection manifest(s)");
+                } else {
+                    collectionSummary = "Collection updates and deletion sync were skipped because you stopped this sync.";
+                }
                 archiveCount = index.count();
                 savedCollectionCount = index.collectionCount();
                 archiveSummary = index.summary();
@@ -1030,6 +1075,7 @@ public final class DownloadToolsActivity extends Activity {
             final int lyricsCount = lyricsSavedCount;
             final int noLyricsCount = lyricsMissingCount;
             final int lyricsFailures = lyricsFailureCount;
+            final String lyricError = lyricsLastError;
             final int savedCount = archiveCount;
             final int savedManifestCount = savedCollectionCount;
             final int manifestCount = collectionManifests;
@@ -1039,10 +1085,16 @@ public final class DownloadToolsActivity extends Activity {
             final String savedSummary = archiveSummary;
             final String manifestSummary = collectionSummary;
             final String error = lastError;
+            final boolean wasCancelled = cancelled || (!automatic && syncStopRequested);
+            final boolean wasBackgrounded = !automatic && syncBackgrounded;
+            if (!automatic) syncBackgrounded = false;
+            final int problemCount = failureCount + lyricsFailures + collectionFailureCount;
             runOnUiThread(() -> {
                 dismissProgress();
                 String message;
-                if (tracks.isEmpty()) {
+                if (wasCancelled) {
+                    message = "Sync stopped. " + newCount + " song(s) were completed; unfinished songs will be picked up next time.";
+                } else if (tracks.isEmpty()) {
                     message = "No MySpoti offline downloads are currently available. Your export archive still contains " + savedCount + " song(s).";
                 } else {
                     message = "Sync complete: " + newCount + " new export(s), " + skippedCount
@@ -1050,19 +1102,33 @@ public final class DownloadToolsActivity extends Activity {
                     if (tagCount > 0) message += " Metadata and artwork embedded in " + tagCount + " file(s).";
                     if (plainCount > 0) message += " " + plainCount + " unsupported format(s) exported without embedded tags.";
                 }
-                if (lyricsCount > 0) message += " Lyrics saved for " + lyricsCount + " track(s): MySpoti offline cache, .lrc sidecars and embedded tags where supported.";
+                if (lyricsCount > 0) message += " Lyrics saved for " + lyricsCount + " track(s): Lyrics/LRC/, Lyrics/JSON/, MySpoti offline cache and embedded tags where supported.";
                 if (noLyricsCount > 0) message += " Lyrics were not available yet for " + noLyricsCount + " track(s); sync again later to retry.";
-                if (lyricsFailures > 0) message += " Lyrics sidecar write failed for " + lyricsFailures + " track(s).";
+                if (lyricsFailures > 0) message += " Lyrics export failed for " + lyricsFailures + " track(s).";
                 if (manifestCount > 0 || !collections.isEmpty()) {
                     message += " Updated " + manifestCount + " playlist/album list(s), referencing " + referencedCount + " exported track(s).";
                     if (missingCount > 0) message += " " + missingCount + " collection track(s) are not downloaded/exported yet.";
                 }
                 if (collectionFailureCount > 0) message += " " + collectionFailureCount + " collection manifest(s) could not be updated.";
-                if (error != null && failureCount > 0) message += " Last error: " + error;
+                if (error != null && failureCount > 0) message += " Last track error: " + error;
+                if (lyricError != null && lyricsFailures > 0) message += " Last lyrics error: " + lyricError;
+                if (wasBackgrounded) message = "Background sync finished. " + message;
                 Toast.makeText(this, message, Toast.LENGTH_LONG).show();
-                if (exportSyncStatus != null) exportSyncStatus.setText(failureCount == 0
-                        ? "Last sync complete. Auto-sync watches completed song downloads and playlist/album changes in the background when enabled."
-                        : "Sync finished with " + failureCount + " problem(s). Check folder permissions and try Sync now.");
+                if (exportSyncStatus != null) {
+                    String status;
+                    if (wasCancelled) status = "Sync stopped. Completed exports were kept; run Sync now again to finish the remaining songs.";
+                    else if (problemCount == 0) status = "Last sync complete. Auto-sync watches completed song downloads and playlist/album changes in the background when enabled.";
+                    else {
+                        String detail = error != null ? error : (lyricError != null ? lyricError : manifestSummary);
+                        status = "Sync finished with " + problemCount + " problem(s).";
+                        if (detail != null && !detail.trim().isEmpty()) status += " Latest detail: " + detail;
+                        if (detail != null && (detail.toLowerCase(java.util.Locale.ROOT).contains("permission")
+                                || detail.toLowerCase(java.util.Locale.ROOT).contains("securityexception"))) {
+                            status += " Reconnect the export folder if Android has revoked its access.";
+                        }
+                    }
+                    exportSyncStatus.setText(status);
+                }
                 if (exportArchiveStatus != null) exportArchiveStatus.setText(savedSummary.isEmpty()
                         ? savedCount + " song record(s) in the portable export index. The index and lyrics sidecars are stored in the selected folder, not in app data."
                         : savedSummary);
@@ -1078,16 +1144,18 @@ public final class DownloadToolsActivity extends Activity {
                     else collectionSyncStatus.setText(manifestSummary);
                 }
                 refreshSummary();
+                if (!automatic) syncRunning = false;
             });
             }
         });
     }
 
     private CollectionSyncResult syncCollectionManifests(ExportIndex index,
-            List<DownloadPatch.CollectionSnapshot> collections) {
+            List<DownloadPatch.CollectionSnapshot> collections, boolean allowStop) {
         CollectionSyncResult result = new CollectionSyncResult();
         java.util.Map<String, Boolean> availableDocumentCache = new java.util.HashMap<>();
         for (DownloadPatch.CollectionSnapshot collection : collections) {
+            if (allowStop && syncStopRequested) break;
             if (collection == null || collection.uri == null || collection.uri.isEmpty()) continue;
             try {
                 boolean album = "album".equalsIgnoreCase(collection.type);
@@ -1232,7 +1300,9 @@ public final class DownloadToolsActivity extends Activity {
 
     private static String addTrackIdSuffix(String filename, String trackId) {
         int dot = filename.lastIndexOf('.');
-        String suffix = trackId.length() > 6 ? trackId.substring(trackId.length() - 6) : trackId;
+        // A short suffix can collide for two different Spotify IDs. Keep the complete
+        // stable ID in the filename so each track has a distinct export and lyric sidecar.
+        String suffix = trackId == null ? "unknown" : trackId.replaceAll("[^A-Za-z0-9._-]", "_");
         return dot > 0 ? filename.substring(0, dot) + " [" + suffix + "]" + filename.substring(dot)
                 : filename + " [" + suffix + "]";
     }
@@ -1417,6 +1487,11 @@ public final class DownloadToolsActivity extends Activity {
     }
 
     private void showProgress(String title, String message, boolean determinate, int max) {
+        showProgress(title, message, determinate, max, false);
+    }
+
+    private void showProgress(String title, String message, boolean determinate, int max,
+                              boolean allowSyncControls) {
         dismissProgress();
         Dialog dialog = new Dialog(this);
         LinearLayout panel = column();
@@ -1440,6 +1515,31 @@ public final class DownloadToolsActivity extends Activity {
         progressBar.setProgressTintList(ColorStateList.valueOf(GREEN));
         progressBar.setProgressBackgroundTintList(ColorStateList.valueOf(DIVIDER));
         panel.addView(progressBar, new LinearLayout.LayoutParams(-1, dp(5)));
+        if (allowSyncControls) {
+            addSpace(panel, 16);
+            LinearLayout actions = row(this);
+            actions.setGravity(Gravity.CENTER_VERTICAL);
+            LinearLayout backgroundButton = actionButton("Run in background", false, "↘");
+            backgroundButton.setOnClickListener(v -> {
+                syncBackgrounded = true;
+                dismissProgress();
+                if (exportSyncStatus != null) exportSyncStatus.setText(
+                        "Sync is continuing in the background. Keep MySpoti open until it finishes.");
+                Toast.makeText(this, "Sync continues in the background.", Toast.LENGTH_SHORT).show();
+            });
+            actions.addView(backgroundButton, new LinearLayout.LayoutParams(0, dp(44), 1f));
+            View gap = new View(this);
+            actions.addView(gap, new LinearLayout.LayoutParams(dp(8), 1));
+            LinearLayout stopButton = actionButton("Stop sync", true, "■");
+            stopButton.setOnClickListener(v -> {
+                syncStopRequested = true;
+                updateProgressMessage("Stopping after the current song finishes…");
+                stopButton.setEnabled(false);
+                stopButton.setClickable(false);
+            });
+            actions.addView(stopButton, new LinearLayout.LayoutParams(0, dp(44), 1f));
+            panel.addView(actions);
+        }
         dialog.setContentView(panel);
         dialog.setCancelable(false);
         dialog.setCanceledOnTouchOutside(false);
@@ -1461,6 +1561,11 @@ public final class DownloadToolsActivity extends Activity {
     private void updateProgress(int value, String message) {
         if (progressDialog == null || !progressDialog.isShowing()) return;
         if (progressBar != null && !progressBar.isIndeterminate()) progressBar.setProgress(value);
+        if (progressMessage != null) progressMessage.setText(message);
+    }
+
+    private void updateProgressMessage(String message) {
+        if (progressDialog == null || !progressDialog.isShowing()) return;
         if (progressMessage != null) progressMessage.setText(message);
     }
 

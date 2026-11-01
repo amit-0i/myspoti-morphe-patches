@@ -321,7 +321,7 @@ final class ExportIndex {
         }
     }
 
-    /** Save full-fidelity JSON plus a same-basename .lrc beside the exported audio. */
+    /** Save portable lyrics under Lyrics/, away from the audio files in Tracks/. */
     void writeLyrics(String trackId, JSONObject lyrics, String lrcContent, boolean embedded) throws Exception {
         if (!LyricsStore.validLyricsJson(lyrics) || lrcContent == null || lrcContent.trim().isEmpty()) return;
         JSONObject item = entries.optJSONObject(trackId);
@@ -332,13 +332,19 @@ final class ExportIndex {
         String audioName = pathParts[pathParts.length - 1];
         int dot = audioName.lastIndexOf('.');
         String baseName = dot > 0 ? audioName.substring(0, dot) : audioName;
-        String[] parentPath = new String[Math.max(0, pathParts.length - 1)];
-        if (parentPath.length > 0) System.arraycopy(pathParts, 0, parentPath, 0, parentPath.length);
-        Uri audioParent = ensureFolderPath(parentPath);
+        String legacyLrcName = baseName + ".lrc";
+        String trackToken = safeTrackFileToken(trackId);
+        String trackSuffix = " [" + trackToken + "]";
+        // Legacy exports did not include a track ID in their media filename. Add the full
+        // stable ID to the LRC name even for those imports, so same-title songs never collide.
+        if (!baseName.endsWith(trackSuffix)) baseName += trackSuffix;
         String lrcName = baseName + ".lrc";
-        Uri lrcDocument = findDocumentInFolder(audioParent, lrcName);
+        String oldLrcDocumentId = item.optString("lyricsLrcDocumentId", "");
+        String oldJsonDocumentId = item.optString("lyricsJsonDocumentId", "");
+        Uri lrcFolder = ensureFolderPath("Lyrics", "LRC");
+        Uri lrcDocument = findDocumentInFolder(lrcFolder, lrcName);
         if (lrcDocument == null) {
-            lrcDocument = DocumentsContract.createDocument(resolver, audioParent, "application/x-subrip", lrcName);
+            lrcDocument = DocumentsContract.createDocument(resolver, lrcFolder, "application/x-subrip", lrcName);
             if (lrcDocument == null) throw new IOException("Android could not create lyrics sidecar " + lrcName);
         }
         try (OutputStream output = resolver.openOutputStream(lrcDocument, "wt")) {
@@ -347,7 +353,7 @@ final class ExportIndex {
             output.flush();
         }
 
-        Uri lyricsFolder = ensureFolderPath("Lyrics");
+        Uri lyricsFolder = ensureFolderPath("Lyrics", "JSON");
         String jsonName = safeTrackFileToken(trackId) + ".json";
         Uri jsonDocument = findDocumentInFolder(lyricsFolder, jsonName);
         if (jsonDocument == null) {
@@ -365,8 +371,8 @@ final class ExportIndex {
         item.put("lyricsAvailable", true);
         item.put("lyricsJsonDocumentId", DocumentsContract.getDocumentId(jsonDocument));
         item.put("lyricsLrcDocumentId", DocumentsContract.getDocumentId(lrcDocument));
-        item.put("lyricsJsonFileName", "Lyrics/" + jsonName);
-        item.put("lyricsLrcFileName", (parentPath.length == 0 ? "" : joinPath(parentPath) + "/") + lrcName);
+        item.put("lyricsJsonFileName", "Lyrics/JSON/" + jsonName);
+        item.put("lyricsLrcFileName", "Lyrics/LRC/" + lrcName);
         item.put("lyricsSynced", portable.optBoolean("synced", false));
         item.put("lyricsProvider", portable.optString("provider", ""));
         item.put("lyricsLanguage", portable.optString("language", ""));
@@ -374,6 +380,46 @@ final class ExportIndex {
         item.put("lyricsUpdatedAt", System.currentTimeMillis());
         entries.put(trackId, item);
         save();
+
+        // Older versions placed the LRC next to its audio file. Remove only the exact
+        // document previously recorded for this track, and only after the new copy is safe.
+        String newLrcDocumentId = DocumentsContract.getDocumentId(lrcDocument);
+        try { deleteDuplicateDocumentsInFolder(lrcFolder, lrcName, newLrcDocumentId); }
+        catch (Throwable error) {
+            android.util.Log.w("MyspotiStoragePatch", "Could not clean duplicate LRC files for " + trackId, error);
+        }
+        if (!oldLrcDocumentId.isEmpty() && !oldLrcDocumentId.equals(newLrcDocumentId)) {
+            try { deleteRecordedDocument(oldLrcDocumentId); }
+            catch (Throwable error) {
+                android.util.Log.w("MyspotiStoragePatch", "Could not remove the previous LRC sidecar for " + trackId, error);
+            }
+        }
+        String newJsonDocumentId = DocumentsContract.getDocumentId(jsonDocument);
+        try { deleteDuplicateDocumentsInFolder(lyricsFolder, jsonName, newJsonDocumentId); }
+        catch (Throwable error) {
+            android.util.Log.w("MyspotiStoragePatch", "Could not clean duplicate JSON lyrics files for " + trackId, error);
+        }
+        if (!oldJsonDocumentId.isEmpty() && !oldJsonDocumentId.equals(newJsonDocumentId)) {
+            try { deleteRecordedDocument(oldJsonDocumentId); }
+            catch (Throwable error) {
+                android.util.Log.w("MyspotiStoragePatch", "Could not remove the previous JSON lyrics file for " + trackId, error);
+            }
+        }
+        // Previous patch versions put the LRC next to the exported audio. Remove only
+        // exact-name sidecars that correspond to this indexed audio file. This also cleans
+        // up same-name duplicates left by document providers that allow duplicate display names.
+        String[] audioParentPath = new String[Math.max(0, pathParts.length - 1)];
+        if (audioParentPath.length > 0) System.arraycopy(pathParts, 0, audioParentPath, 0, audioParentPath.length);
+        try { deleteDocumentsNamedInFolder(ensureFolderPath(audioParentPath), legacyLrcName); }
+        catch (Throwable error) {
+            android.util.Log.w("MyspotiStoragePatch", "Could not remove old adjacent LRC sidecars for " + trackId, error);
+        }
+        // The previous JSON layout stored <track-id>.json directly under Lyrics/.
+        // Clean only that exact indexed filename after the replacement is safely written.
+        try { deleteDocumentsNamedInFolder(ensureFolderPath("Lyrics"), jsonName); }
+        catch (Throwable error) {
+            android.util.Log.w("MyspotiStoragePatch", "Could not remove the legacy JSON lyrics file for " + trackId, error);
+        }
     }
 
     private static String safeTrackFileToken(String id) {
@@ -455,7 +501,7 @@ final class ExportIndex {
         }
         if (entries.length() > shown) text.append("\n…and ").append(entries.length() - shown).append(" more songs.");
         text.append("\nMusic is stored once in Tracks/; playlists and albums reference those files.");
-        text.append("\nLyrics: ").append(lyricsCount()).append(" track(s) archived as JSON and LRC sidecars.");
+        text.append("\nLyrics: ").append(lyricsCount()).append(" track(s) in Lyrics/LRC/ and Lyrics/JSON/.");
         text.append("\nStored beside your exported files; reconnect this same folder after reinstall.");
         return text.toString();
     }
@@ -648,6 +694,24 @@ final class ExportIndex {
             }
         }
         return null;
+    }
+
+    private void deleteDocumentsNamedInFolder(Uri folder, String displayName) throws Exception {
+        deleteDuplicateDocumentsInFolder(folder, displayName, null);
+    }
+
+    /** Keep one selected document and remove any same-name duplicate files in a folder. */
+    private void deleteDuplicateDocumentsInFolder(Uri folder, String displayName, String keepDocumentId) throws Exception {
+        String id = DocumentsContract.getDocumentId(folder);
+        for (Child child : queryChildren(id)) {
+            if (!displayName.equals(child.name)
+                    || DocumentsContract.Document.MIME_TYPE_DIR.equals(child.mime)
+                    || (keepDocumentId != null && keepDocumentId.equals(child.id))) continue;
+            Uri document = documentUri(child.id);
+            if (!deleteDocument(document)) {
+                android.util.Log.w("MyspotiStoragePatch", "Could not remove duplicate lyric file " + displayName);
+            }
+        }
     }
 
     private Uri findDocumentInPath(String displayName, String... folderPath) throws Exception {
