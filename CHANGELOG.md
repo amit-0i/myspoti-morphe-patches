@@ -1,3 +1,9 @@
+## [1.3.0](https://github.com/amit-0i/myspoti-morphe-patches/compare/v1.2.0...v1.3.0) (2026-11-01)
+
+### ✨ New Features
+
+* **playback:** prioritize local playback for downloaded songs ([2ec3219](https://github.com/amit-0i/myspoti-morphe-patches/commit/2ec32199a0ab9b6063299cf861d43936eb30fc28))
+
 ## [1.2.0](https://github.com/amit-0i/myspoti-morphe-patches/compare/v1.1.0...v1.2.0) (2026-11-01)
 
 ### 🐛 Bug Fixes
