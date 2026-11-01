@@ -933,6 +933,7 @@ public final class DownloadToolsActivity extends Activity {
             int untaggedCount = 0;
             int lyricsSavedCount = 0;
             int lyricsMissingCount = 0;
+            int lyricsLookupQueuedCount = 0;
             int lyricsFailureCount = 0;
             String lyricsLastError = null;
             String lastError = null;
@@ -975,14 +976,35 @@ public final class DownloadToolsActivity extends Activity {
                         String displayName = exportDisplayName(artist, title, source);
                         String relativePathFromRoot = index.relativePathFromRoot(trackId);
 
-                        // Reuse an existing portable lyrics copy first; otherwise ask the same resolver
-                        // used by MySpoti's player. This writes the exact native offline cache format too.
-                        JSONObject lyricsJson = index.readLyricsJson(trackId);
-                        if (lyricsJson == null) lyricsJson = LyricsStore.readNativeCache(this, trackId);
-                        // Lyrics are best-effort: a resolver/cache problem must never prevent
-                        // an otherwise valid audio file from being exported.
-                        if (lyricsJson == null) lyricsJson = LyricsStore.obtain(this, trackId, title, artist, album,
-                                DownloadPatch.trackDurationMs(track), DownloadPatch.trackCoverUrl(track), true);
+                        boolean canEmbedLyrics = AudioMetadataWriter.supportsLyricsEmbedding(extension);
+                        // The index flag can outlive user-deleted sidecar files. Verify the
+                        // canonical LRC and JSON paths before deciding that lyrics are complete.
+                        boolean lyricsSidecarsMissing = false;
+                        if (index.hasLyricsAvailable(trackId)) {
+                            try { lyricsSidecarsMissing = index.lyricsSidecarsNeedRepair(trackId); }
+                            catch (Throwable inspectLyricsError) {
+                                Log.w("MyspotiStoragePatch", "Could not inspect portable lyric sidecars for " + trackId, inspectLyricsError);
+                            }
+                        }
+                        boolean needLyricsJson = !index.hasLyricsAvailable(trackId) || lyricsSidecarsMissing
+                                || (canEmbedLyrics && !index.hasLyricsEmbedded(trackId));
+                        JSONObject lyricsJson = needLyricsJson ? index.readLyricsJson(trackId) : null;
+                        if (needLyricsJson && lyricsJson == null) lyricsJson = LyricsStore.readNativeCache(this, trackId);
+                        // Recover the JSON archive from a surviving .lrc if the JSON copy and
+                        // MySpoti's private cache are both unavailable.
+                        if (needLyricsJson && lyricsJson == null) {
+                            String savedLrc = index.readLyricsLrc(trackId);
+                            lyricsJson = LyricsStore.fromLrc(trackId, savedLrc, "Portable LRC backup");
+                        }
+                        // A manual sync must not wait up to 30 seconds for every missing lyric set.
+                        // Kick MySpoti's own prefetch in the background; its durable cache observer
+                        // will trigger an incremental export pass when lyrics arrive (when auto-sync
+                        // is enabled). With auto-sync off, the next manual sync picks up the cache.
+                        if (needLyricsJson && lyricsJson == null && LyricsStore.requestPrefetch(this, trackId,
+                                title, artist, album, DownloadPatch.trackDurationMs(track),
+                                DownloadPatch.trackCoverUrl(track), true)) {
+                            lyricsLookupQueuedCount++;
+                        }
                         boolean hasLyrics = LyricsStore.validLyricsJson(lyricsJson);
                         if (hasLyrics && LyricsStore.readNativeCache(this, trackId) == null) {
                             try { LyricsStore.restoreNativeCache(this, trackId, lyricsJson); }
@@ -1017,7 +1039,6 @@ public final class DownloadToolsActivity extends Activity {
                             relativePathFromRoot = displayName;
                         }
 
-                        boolean canEmbedLyrics = AudioMetadataWriter.supportsLyricsEmbedding(extension);
                         boolean needAudioWrite = created || (!sameFingerprint && !legacyImported)
                                 || (hasLyrics && canEmbedLyrics && !index.hasLyricsEmbedded(trackId));
                         boolean embeddedLyrics = index.hasLyricsEmbedded(trackId);
@@ -1053,7 +1074,7 @@ public final class DownloadToolsActivity extends Activity {
                                         ? lyricError.getClass().getSimpleName() : lyricError.getMessage();
                                 Log.w("MyspotiStoragePatch", "Audio exported but lyric sidecars could not be saved for " + title, lyricError);
                             }
-                        } else {
+                        } else if (!index.hasLyricsAvailable(trackId) || lyricsSidecarsMissing) {
                             lyricsMissingCount++;
                         }
                     } catch (Throwable t) {
@@ -1135,6 +1156,7 @@ public final class DownloadToolsActivity extends Activity {
             final int plainCount = untaggedCount;
             final int lyricsCount = lyricsSavedCount;
             final int noLyricsCount = lyricsMissingCount;
+            final int lyricsQueuedCount = lyricsLookupQueuedCount;
             final int lyricsFailures = lyricsFailureCount;
             final String lyricError = lyricsLastError;
             final int savedCount = archiveCount;
@@ -1165,6 +1187,8 @@ public final class DownloadToolsActivity extends Activity {
                 if (lyricsCount > 0) message += " Lyrics saved for " + lyricsCount + " track(s): Lyrics/LRC/, Lyrics/JSON/, MySpoti offline cache and embedded tags where supported.";
                 if (noLyricsCount > 0) message += " Lyrics were not available yet for " + noLyricsCount + " track(s); sync again later to retry.";
                 if (lyricsFailures > 0) message += " Lyrics export failed for " + lyricsFailures + " track(s).";
+                if (lyricsQueuedCount > 0) message += " Requested background lyrics lookup for " + lyricsQueuedCount
+                        + " track(s); MySpoti will add them to the export on a later sync when they become available.";
                 if (manifestCount > 0 || !collections.isEmpty()) {
                     message += " Updated " + manifestCount + " playlist/album list(s), referencing " + referencedCount + " exported track(s).";
                     if (missingCount > 0) message += " " + missingCount + " collection track(s) are not downloaded/exported yet.";
@@ -1177,7 +1201,10 @@ public final class DownloadToolsActivity extends Activity {
                 if (exportSyncStatus != null) {
                     String status;
                     if (wasCancelled) status = "Sync stopped. Completed exports were kept; run Sync now again to finish the remaining songs.";
-                    else if (problemCount == 0) status = "Last sync complete. Auto-sync watches completed song downloads and playlist/album changes in the background when enabled.";
+                    else if (problemCount == 0) status = lyricsQueuedCount > 0
+                            ? "Audio sync complete. MySpoti is looking up lyrics for " + lyricsQueuedCount
+                                    + " track(s) in the background; they will be exported when available."
+                            : "Last sync complete. Auto-sync watches completed song downloads and playlist/album changes in the background when enabled.";
                     else {
                         String detail = error != null ? error : (lyricError != null ? lyricError : manifestSummary);
                         status = "Sync finished with " + problemCount + " problem(s).";

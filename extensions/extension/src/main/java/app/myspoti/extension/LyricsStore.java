@@ -43,6 +43,46 @@ final class LyricsStore {
 
     private LyricsStore() {}
 
+
+    /**
+     * Start MySpoti's native lyrics fetch without waiting for the network result. Export sync
+     * must not block for up to FETCH_WAIT_MS for every song that has no lyrics yet; the native
+     * cache observer can archive the result once MySpoti finishes the request.
+     */
+    static boolean requestPrefetch(Context context, String trackId, String title, String artist,
+                                   String album, long durationMs, String coverUrl, boolean retryMiss) {
+        if (trackId == null || trackId.trim().isEmpty()) return false;
+        String key = trackId.trim();
+        try {
+            if (readNativeCache(context, key) != null) return false;
+            Class<?> api = Class.forName(API_CLASS);
+            Class<?> trackType = Class.forName(TRACK_CLASS);
+            Object track = createTrack(trackType, key, title, artist, album, durationMs, coverUrl);
+            Object apiInstance = singletonInstance(api);
+            Map<?, ?> cache = objectMap(api, "b", apiInstance);
+            Map<?, ?> inFlight = objectMap(api, "c", apiInstance);
+            // A player-initiated request is already doing the work; count it as queued so
+            // the sync status accurately reports the outstanding background lookup.
+            if (inFlight != null && inFlight.containsKey(key)) return true;
+            Object cached = cache == null ? null : cache.get(key);
+            if (cached != null && isLyrics(cached)) {
+                JSONObject encoded = encodeRuntimeLyrics(cached, key);
+                if (encoded != null) writeNativeCache(context, key, encoded);
+                return false;
+            }
+            if (cached != null && !retryMiss) return false;
+            if (retryMiss && cache != null && cached != null) {
+                try { cache.remove(key); } catch (Throwable ignored) {}
+            }
+            Method prefetch = findPrefetchMethod(api, trackType);
+            prefetch.invoke(Modifier.isStatic(prefetch.getModifiers()) ? null : apiInstance, track);
+            return true;
+        } catch (Throwable error) {
+            Log.w(TAG, "Could not request non-blocking lyrics lookup for " + safe(title), error);
+            return false;
+        }
+    }
+
     /** Obtain lyrics by scheduling MySpoti's native fetch and waiting for its result. */
     static JSONObject obtain(Context context, String trackId, String title, String artist,
                              String album, long durationMs, String coverUrl) {
@@ -116,22 +156,7 @@ final class LyricsStore {
      */
     private static Object awaitNativePrefetch(Context context, Class<?> api, Object apiInstance,
                                                Class<?> trackType, Object track, String key) throws Exception {
-        Method prefetch;
-        try {
-            prefetch = api.getDeclaredMethod("n", trackType);
-        } catch (NoSuchMethodException renamed) {
-            prefetch = null;
-            for (Method candidate : api.getDeclaredMethods()) {
-                Class<?>[] parameters = candidate.getParameterTypes();
-                if (parameters.length == 1 && parameters[0] == trackType
-                        && candidate.getReturnType() == void.class) {
-                    prefetch = candidate;
-                    break;
-                }
-            }
-            if (prefetch == null) throw renamed;
-        }
-        prefetch.setAccessible(true);
+        Method prefetch = findPrefetchMethod(api, trackType);
         prefetch.invoke(Modifier.isStatic(prefetch.getModifiers()) ? null : apiInstance, track);
 
         Map<?, ?> cache = objectMap(api, "b", apiInstance);
@@ -165,6 +190,26 @@ final class LyricsStore {
         }
         Log.w(TAG, "Timed out waiting for MySpoti's native lyrics prefetch");
         return null;
+    }
+
+    private static Method findPrefetchMethod(Class<?> api, Class<?> trackType) throws Exception {
+        Method prefetch;
+        try {
+            prefetch = api.getDeclaredMethod("n", trackType);
+        } catch (NoSuchMethodException renamed) {
+            prefetch = null;
+            for (Method candidate : api.getDeclaredMethods()) {
+                Class<?>[] parameters = candidate.getParameterTypes();
+                if (parameters.length == 1 && parameters[0] == trackType
+                        && candidate.getReturnType() == void.class) {
+                    prefetch = candidate;
+                    break;
+                }
+            }
+            if (prefetch == null) throw renamed;
+        }
+        prefetch.setAccessible(true);
+        return prefetch;
     }
 
     private static boolean isLyrics(Object value) {
